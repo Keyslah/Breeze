@@ -1,0 +1,7 @@
+FAIL: java.lang.AssertionError: late covering sample binds exact anchor's session
+	at com.aaron.breeze.VoiceFeelingChecks.check(VoiceFeelingChecks.java:19)
+	at com.aaron.breeze.VoiceFeelingChecks.delayedBindingAndRecovery(VoiceFeelingChecks.java:142)
+	at com.aaron.breeze.VoiceFeelingChecks.run(VoiceFeelingChecks.java:41)
+	at com.aaron.breeze.StoreTestRunner.onStart(StoreTestRunner.java:32)
+	at android.app.Instrumentation$InstrumentationThread.run(Instrumentation.java:2637)
+

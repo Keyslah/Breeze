@@ -1,0 +1,2 @@
+PASS: Hot/Cold time and 1-10 entries, night isolation, editing, persistence, v2 migration preserves history, validation and sensor CSV compatibility
+

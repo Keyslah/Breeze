@@ -1,0 +1,29 @@
+{
+  "integrity": "ok",
+  "schema": 4,
+  "tables": {
+    "sessions": {
+      "before": 5,
+      "after": 6,
+      "missing_or_changed_original_values": 0
+    },
+    "samples": {
+      "before": 38509,
+      "after": 38615,
+      "missing_or_changed_original_values": 0
+    },
+    "weather": {
+      "before": 26,
+      "after": 26,
+      "missing_or_changed_original_values": 0
+    },
+    "feelings": {
+      "before": 0,
+      "after": 0,
+      "missing_or_changed_original_values": 0
+    }
+  },
+  "previously_closed_sessions_changed": 0,
+  "new_controller_end_markers": 1,
+  "cursor_regressions": 0
+}

@@ -1,0 +1,47 @@
+{
+  "device": "Pixel 8 Pro",
+  "navTop": 2005,
+  "readings": [
+    {
+      "label": "D0 body",
+      "checked": "true",
+      "value": "99.4\u00b0F",
+      "bounds": "[91,1268][485,1346]"
+    },
+    {
+      "label": "D1 body",
+      "checked": "true",
+      "value": "97.7\u00b0F",
+      "bounds": "[522,1268][917,1346]"
+    },
+    {
+      "label": "SHT40 temp",
+      "checked": "true",
+      "value": "71.5\u00b0F",
+      "bounds": "[91,1459][485,1537]"
+    },
+    {
+      "label": "Outdoor temp",
+      "checked": "true",
+      "value": "67.8\u00b0F",
+      "bounds": "[522,1459][917,1537]"
+    },
+    {
+      "label": "Humidity",
+      "checked": "true",
+      "value": "54.7%",
+      "bounds": "[91,1650][485,1728]"
+    },
+    {
+      "label": "Outdoor humidity",
+      "checked": "true",
+      "value": "52.0%",
+      "bounds": "[522,1650][917,1728]"
+    }
+  ],
+  "checkboxCount": 6,
+  "uncheckedValueRetained": true,
+  "checkboxPersistedAcrossNavigation": true,
+  "originalAllSixEnabledMaskRestored": true,
+  "homeRecordingButtonCount": 1
+}

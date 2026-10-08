@@ -1,0 +1,5 @@
+SERVICE com.aaron.breeze/.BedtimeVoiceService 4f93896 pid=27695 user=0
+  Client:
+    ready=true recordingActive=true status=Listening silently for Breeze • test only
+    commandPending=false inputBlocked=false shutdownRequested=false wakeLock=true
+    lifecycle=active=true pending=false suppressed=false starting=false listener=true status=Recording • open Breeze to enable listening.

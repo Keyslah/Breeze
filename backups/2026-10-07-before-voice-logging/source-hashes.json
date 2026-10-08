@@ -1,0 +1,78 @@
+[
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\androidTest\\java\\com\\aaron\\breeze\\BleRecoveryChecks.java",
+    "Hash": "2CB99CB6411F3CFFCC5CB67C19A5FA376EACBC801F43102CF0E0E3BF0F9F9C6C"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\androidTest\\java\\com\\aaron\\breeze\\ControlsChecks.java",
+    "Hash": "4B14D4227FC4EA52DE4E2F85BC980453331771F2A340CA4B58A3594773B0A98B"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\androidTest\\java\\com\\aaron\\breeze\\FeelingEntryChecks.java",
+    "Hash": "F8580BE2AA3C5E95868DDDFA0B8F0CDEA8344DFB6628F3C66950E61C588F0E43"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\androidTest\\java\\com\\aaron\\breeze\\HistoryZoomChecks.java",
+    "Hash": "AA0B04F32EADAE806588D10B12F2E8B7EB5C6B7E791E4EAC846DAA3D3884A18D"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\androidTest\\java\\com\\aaron\\breeze\\StoreTestRunner.java",
+    "Hash": "B802B7FBBCE6D3305544DBAB9D5A0431058FD8F002EDC8304E11028966E5B51A"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\AndroidManifest.xml",
+    "Hash": "5DE5510D32A2B0DFD750972E089A0E0D34E5BBD210D6ED571BBBB8C9B0D4306B"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\BreezeService.java",
+    "Hash": "BBAFF06BB4B02C2CE97886660B4A52533B2A74A2C5AC2E19A2310C7FB89E0970"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\FeelingEntriesView.java",
+    "Hash": "D32D4672517524164B50195E2842FCDBE5467C0C522A56F6790AF861CE885691"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\GraniteDrawable.java",
+    "Hash": "5173C8A64A8E8168ADBB0AD0AA3D8C52D9455C9BF8345DE6A15DA96E070F7A44"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\GraphView.java",
+    "Hash": "E0E9FD98948618563085870624AC417E7E94993F8205805AEA4743768DF4CBD9"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\MainActivity.java",
+    "Hash": "26880B02D1B6C7667D6422988AA7467755675F7DB1F5EFC814B33FF9E8020BC1"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\Protocol.java",
+    "Hash": "56DA7663B7576AC51BE58F52AB7F30857B7296A44F34FE5E70F244E2F962079D"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\Settings.java",
+    "Hash": "F67BCDB70C2E410B62146B46CAC25416B308FB58843662B37637AF8D148086A6"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\Store.java",
+    "Hash": "C65C63358C237F0999E9478A2759BBA946D9B84B1335C52C03E0058EEEEEE0FC"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\java\\com\\aaron\\breeze\\Weather.java",
+    "Hash": "5E5AB532EDC8DD77FCC02505450C6BDB38CEAE0D080E6631F2C8FA48556FEECB"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\res\\drawable\\ic_breeze.xml",
+    "Hash": "3C781366B52901B9EA28EE7A64963B4A6249955370B41F6DAD97E8B4ADB4D5DD"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\main\\res\\values\\styles.xml",
+    "Hash": "2927B4059DFFC10609312A923BC89D438CF409209F91A28CBFF080AEA4F3098C"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\test\\java\\com\\aaron\\breeze\\FanProtocolTest.java",
+    "Hash": "8AB584D2AB30434CB36043A6ADE93B5487F784385426B9FAB38C5ADF194D18BE"
+  },
+  {
+    "Path": "D:\\Dev\\workspace\\Codex\\Android\\Breeze\\app\\src\\test\\java\\com\\aaron\\breeze\\ProtocolTest.java",
+    "Hash": "49542406FAFC3FA766E4719C3FB6B8122AF1F0CD0E40293940ABE1FB8CF8C990"
+  }
+]

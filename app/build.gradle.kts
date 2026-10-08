@@ -1,0 +1,20 @@
+plugins { id("com.android.application") }
+layout.buildDirectory.set(file(providers.gradleProperty("breezeBuildDir").orElse("out-sensors").get()))
+android {
+    namespace = "com.aaron.breeze"
+    compileSdk = 36
+    defaultConfig {
+        applicationId = "com.aaron.breeze"
+        minSdk = 33
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+        testInstrumentationRunner = "com.aaron.breeze.StoreTestRunner"
+    }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+}
+dependencies {
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
+    testImplementation("junit:junit:4.13.2")
+}

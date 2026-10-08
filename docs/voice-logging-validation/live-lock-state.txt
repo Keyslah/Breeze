@@ -1,0 +1,3 @@
+Trust manager state:
+ User "Aaron" (id=0, flags=0x4c13) (current): trustState=UNTRUSTED, trustManaged=1, deviceLocked=0, isActiveUnlockRunning=0, strongAuthRequired=0x0
+   Enabled agents:

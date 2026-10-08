@@ -1,0 +1,2 @@
+PASS: v3 to v4 preserves all manual feelings, IDs, nights, probes, weather and cursors; current device time with original offset/zone; WARM/COLD signed bounds and validation; committed notifications; durable pending entries, exact archive/record binding and interval guards; UUID retry idempotence versus deliberate repeats; reopen and manual recovery; accepted parser commands through the real asynchronous writer and committed main-thread callback with immutable capture time; temporary databases only
+

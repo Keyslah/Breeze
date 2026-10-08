@@ -1,0 +1,17 @@
+
+  mWakefulness=Dozing
+  mHoldingWakeLockSuspendBlocker=true
+  PARTIAL_WAKE_LOCK                 'Breeze:BedtimeVoice' ACQ=-1m36s597ms LONG (uid=10472 isFrozen=false isAttributedUidCached=false pid=10349 powerGroupId=0)
+mWakefulness=3
+  10-07 04:43:32.440 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+  10-07 05:05:51.686 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+  10-07 04:50:19.118 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+  10-07 05:05:56.858 - 10472 (com.aaron.breeze) - REL Breeze:BedtimeVoice
+  10-07 05:07:28.662 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+  10-07 05:10:04.427 - 10472 (com.aaron.breeze) - REL Breeze:BedtimeVoice
+  10-07 05:10:08.805 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+  10-07 05:10:33.455 - 10472 (com.aaron.breeze) - REL Breeze:BedtimeVoice
+  10-07 05:11:15.606 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+  10-07 05:12:09.823 - 10472 (com.aaron.breeze) - REL Breeze:BedtimeVoice
+  10-07 05:12:15.039 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)
+

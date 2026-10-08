@@ -1,0 +1,9 @@
+SERVICE com.aaron.breeze/.BreezeService 4ddbb2f pid=27695 user=0
+  Client:
+    status=Connected ready=true firmware=1.2.1
+    packetAgeMs=385 queued=0 pending=none
+    controllerRecords=38483..38483 freeBytes=507904 storageReady=true
+    phoneCursor=38483 transfer=Downloaded and confirmed • controller storage ready
+    telemetryError=0 commandError=0 recording=true
+    lastError=
+    voice=active=true pending=false suppressed=false starting=false listener=true status=Recording • open Breeze to enable listening.

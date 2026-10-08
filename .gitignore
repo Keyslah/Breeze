@@ -1,0 +1,14 @@
+.gradle/
+**/build/
+**/out/
+local.properties
+.tools/
+.arduino/
+
+.arduino-dreo/
+firmware/out-dreo/
+app/out-sensors/
+
+# Generated Android and firmware build variants.
+app/out-*/
+firmware/out-*/

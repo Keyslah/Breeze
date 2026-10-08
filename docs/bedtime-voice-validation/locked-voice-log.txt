@@ -1,0 +1,18 @@
+--------- beginning of main
+10-07 04:24:44.258  4794  4794 I BreezeVoice: RECOGNIZED warm seven locked=true interactive=false testOnly=true
+10-07 04:24:47.889  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:24:55.124  4794  4794 I BreezeVoice: RECOGNIZED cold two locked=true interactive=false testOnly=true
+10-07 04:24:58.642  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:25:10.797  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:25:18.241  4794  4794 I BreezeVoice: RECOGNIZED warm ten locked=true interactive=false testOnly=true
+10-07 04:25:21.745  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:25:27.297  4794  4794 I BreezeVoice: RECOGNIZED cold one locked=true interactive=false testOnly=true
+10-07 04:25:30.746  4794  4794 I BreezeVoice: READY offline microphone listening
+--------- beginning of main
+10-07 04:25:10.797  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:25:18.241  4794  4794 I BreezeVoice: RECOGNIZED warm ten locked=true interactive=false testOnly=true
+10-07 04:25:21.745  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:25:27.297  4794  4794 I BreezeVoice: RECOGNIZED cold one locked=true interactive=false testOnly=true
+10-07 04:25:30.746  4794  4794 I BreezeVoice: READY offline microphone listening
+10-07 04:25:47.153  4794  4945 I BreezeVoice: RELEASE microphone and local recognizer
+10-07 04:25:47.159  4794  4794 I BreezeVoice: STOP service destroyed; wake lock and speech released

@@ -1,0 +1,12 @@
+10-07 04:40:35.547 I/BreezeVoice(12962): RELEASE microphone and local recognizer
+10-07 04:40:35.549 I/BreezeVoice(12962): STOP service destroyed; wake lock and speech released
+10-07 04:40:35.593 I/BreezeVoice(12962): ARM active=true pending=false suppressed=false starting=true listener=false status=Recording • open Breeze to enable listening.
+10-07 04:40:35.613 I/BreezeVoice(12962): START recording-linked offline bedside test; no logging
+10-07 04:40:45.148 I/BreezeVoice(12962): READY offline microphone listening
+10-07 04:40:45.434 I/BreezeVoice(12962): RELEASE microphone and local recognizer
+10-07 04:40:45.436 I/BreezeVoice(12962): STOP service destroyed; wake lock and speech released
+10-07 04:40:46.221 I/BreezeVoice(12962): ARM active=true pending=false suppressed=false starting=true listener=false status=Recording • open Breeze to enable listening.
+10-07 04:40:46.257 I/BreezeVoice(12962): START recording-linked offline bedside test; no logging
+10-07 04:40:56.794 I/BreezeVoice(12962): READY offline microphone listening
+10-07 04:40:57.201 I/BreezeVoice(12962): RELEASE microphone and local recognizer
+10-07 04:40:57.203 I/BreezeVoice(12962): STOP service destroyed; wake lock and speech released

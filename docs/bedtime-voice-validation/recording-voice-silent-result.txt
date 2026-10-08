@@ -1,0 +1,7 @@
+PASS: recording-linked voice lifecycle using real Activity, foreground microphone and native model; fake controller only; no record writes
+Home start prearms; idle packet stays gated; active telemetry enables listening.
+Confirmed idle stops microphone worker with Activity destroyed.
+Opening visible Breeze automatically rejoins an already active recording.
+Pause survives repeated active telemetry/reconciliation and resets for the next recording.
+Idle then active in one callback releases the old worker and automatically readies a new listener.
+

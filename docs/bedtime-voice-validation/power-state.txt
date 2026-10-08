@@ -1,0 +1,4 @@
+  mWakefulness=Awake
+  PARTIAL_WAKE_LOCK                 'Breeze:BedtimeVoice' ACQ=-1m19s139ms LONG (uid=10472 isFrozen=false isAttributedUidCached=false pid=4794 powerGroupId=0)
+mWakefulness=1
+  10-07 04:24:23.343 - 10472 (com.aaron.breeze) - ACQ Breeze:BedtimeVoice (partial)

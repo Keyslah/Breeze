@@ -1,0 +1,2 @@
+PASS: transient busy retry, expired binder recovery, precise rejection status, accepted-write failure and timeout without replay, ACK/callback ordering, serialized follow-up commands, Bluetooth off/on, telemetry watchdog, stale timer suppression, durable storage recovery confirmation; fake transport only
+

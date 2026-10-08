@@ -1,0 +1,7 @@
+FAIL: java.lang.AssertionError: Timed out: recording microphone readiness; active=true pending=false suppressed=true starting=false listener=false status=Another app interrupted spoken feedback. Open Breeze to restart the voice test. service=Another app interrupted spoken feedback. Open Breeze to restart the voice test.
+	at com.aaron.breeze.RecordingVoiceChecks.await(RecordingVoiceChecks.java:217)
+	at com.aaron.breeze.RecordingVoiceChecks.awaitReady(RecordingVoiceChecks.java:189)
+	at com.aaron.breeze.RecordingVoiceChecks.run(RecordingVoiceChecks.java:87)
+	at com.aaron.breeze.StoreTestRunner.onStart(StoreTestRunner.java:32)
+	at android.app.Instrumentation$InstrumentationThread.run(Instrumentation.java:2637)
+

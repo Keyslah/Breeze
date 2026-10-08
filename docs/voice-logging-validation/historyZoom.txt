@@ -1,0 +1,2 @@
+PASS: pinch zoom, horizontal pan, reset, same-night refresh preservation, changed-night reset, vertical scrolling and feeling markers
+

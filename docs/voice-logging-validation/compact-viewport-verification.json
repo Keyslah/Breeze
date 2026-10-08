@@ -1,0 +1,33 @@
+{
+  "timestamp": "Oct 7 \u00b7 10:16:46 AM",
+  "headerBounds": "[86,302][357,370]",
+  "timestampBounds": "[375,306][922,366]",
+  "navigationTop": 2005,
+  "allSixValuesFullyVisible": true,
+  "values": [
+    {
+      "text": "99.4\u00b0F",
+      "bounds": "[91,1218][485,1303]"
+    },
+    {
+      "text": "97.7\u00b0F",
+      "bounds": "[522,1218][917,1303]"
+    },
+    {
+      "text": "71.5\u00b0F",
+      "bounds": "[91,1375][485,1460]"
+    },
+    {
+      "text": "67.8\u00b0F",
+      "bounds": "[522,1375][917,1460]"
+    },
+    {
+      "text": "54.7%",
+      "bounds": "[91,1532][485,1617]"
+    },
+    {
+      "text": "52.0%",
+      "bounds": "[522,1532][917,1617]"
+    }
+  ]
+}

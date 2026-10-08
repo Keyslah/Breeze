@@ -1,0 +1,2 @@
+PASS: signed feeling marker heights, irregular actual-time spacing, fixed neutral scale, unchanged temperature scale, feelings-only selection/zoom/refresh and night isolation
+

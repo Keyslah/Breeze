@@ -1,0 +1,5 @@
+[IR] IRremoteESP8266 2.9.0 RX D6/GPIO16 TX D7/GPIO17 learned=0x000. Auto OFF; speed unknown.
+[SENSORS] D0=22.78C D1=nanC room=22.67C RH=63.0 warmerProbe=1
+Breeze IR-v7 ready. Raw body D0/D1. SHT40 D4/D5. IR RX D6, TX D7. Auto OFF.
+[BLE] opcode=3 seq=22622 action=0
+[SENSORS] D0=23.17C D1=nanC room=22.67C RH=63.0 warmerProbe=1

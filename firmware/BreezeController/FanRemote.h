@@ -1,0 +1,51 @@
+#pragma once
+#include <Arduino.h>
+#include <Preferences.h>
+#include <IRrecv.h>
+#include <IRsend.h>
+#include "Pins.h"
+#include "Sensors.h"
+
+class FanRemote {
+ public:
+  static constexpr uint8_t SLOT_COUNT=12, NONE=255;
+  enum Action:uint8_t {LEARN=1,CANCEL=2,CLEAR=3,SEND=4,TARGET=5,SYNC=6,AUTO=7,VERIFIED=8,FORGET_STATE=9};
+  enum Error:uint8_t {OK=0,NOT_LEARNED=20,NEED_SYNC=21,BUSY=22,TIMEOUT=23,STORAGE=24,BAD_CAPTURE=25,BAD_VALUE=26,NO_BODY=27,NEED_TEST=28,REMOTE_USED=29,RULES_PENDING=30};
+  enum LearnState:uint8_t {IDLE,WAITING,SAVED,EXPIRED,CANCELED,FAILED};
+  void begin();
+  uint8_t command(const uint8_t* packet);
+  void tick(float body0,float body1,float room,uint32_t now);
+  void statusPacket(uint8_t* b,float rawBody1,uint8_t phase) const;
+  void disconnected();
+  void cancelAutomatic(uint8_t reason);
+ private:
+  static constexpr uint16_t MAX_RAW=768;
+  struct Learned {
+    uint32_t magic=0x42524952;
+    uint16_t version=1,count=0,carrier=38,bits=0;
+    int16_t protocol=-1;
+    uint8_t decoded=0,reserved=0;
+    uint64_t value=0;
+    uint32_t address=0,command=0;
+    uint16_t raw[MAX_RAW]={};
+    uint32_t checksum=0;
+  };
+  IRrecv receiver{IR_RECEIVE_PIN,1024,15,true};
+  IRsend sender{IR_TRANSMIT_PIN};
+  Preferences nvs;
+  bool storageReady=false,automatic=false,synchronized=false,verified=false,normalMode=false;
+  int estimated=0,target=0;
+  uint16_t learnedMask=0,sendCounter=0;
+  uint8_t learning=NONE,learnResultSlot=NONE,learnState=IDLE,error=OK,lastSent=NONE,source=0;
+  uint16_t learnCarrier=38;
+  uint32_t learningAt=0,lastSend=0,ignoreReceiveUntil=0;
+  bool sentOnce=false,rcToggle=false;
+  float controlBody=NAN,ambient=NAN;
+  bool load(uint8_t slot,Learned& code);
+  bool save(uint8_t slot,Learned& code);
+  void capture(uint32_t now);
+  uint8_t transmit(uint8_t slot);
+  void invalidate(uint8_t reason);
+  static uint32_t checksum(const Learned& code);
+  static const char* name(uint8_t slot);
+};

@@ -1,0 +1,63 @@
+Trust manager state:
+ User "Aaron" (id=0, flags=0x4c13) (current): trustState=UNTRUSTED, trustManaged=1, deviceLocked=1, isActiveUnlockRunning=0, strongAuthRequired=0x0
+   Enabled agents:
+    com.google.android.gms/.auth.trustagent.GoogleTrustAgent
+     bound=1, connected=1, managingTrust=0, trusted=0
+    com.google.android.gms/.personalsafety.service.LockingTrustAgentService
+     bound=1, connected=1, managingTrust=0, trusted=0
+    com.google.android.gms/.auth.trustagent.ActiveUnlockTrustAgent
+     bound=1, connected=1, managingTrust=1, trusted=0
+   Events:
+    #0  10-07 02:06:24.650 ManagingTrust: agent=ActiveUnlockTrustAgent, managingTrust=true
+    #1  10-07 02:06:24.647 AgentConnected: agent=ActiveUnlockTrustAgent
+    #2  10-07 02:06:23.337 AgentConnected: agent=LockingTrustAgentService
+    #3  10-07 02:06:23.302 AgentConnected: agent=GoogleTrustAgent
+    #4  10-07 02:06:20.186 RevokeTrust: agent=ActiveUnlockTrustAgent
+    #5  10-07 02:06:20.187 AgentDied: agent=ActiveUnlockTrustAgent
+    #6  10-07 02:06:20.186 RevokeTrust: agent=LockingTrustAgentService
+    #7  10-07 02:06:20.185 RevokeTrust: agent=GoogleTrustAgent
+    #8  10-07 02:06:20.170 AgentDied: agent=LockingTrustAgentService
+    #9  10-07 02:06:20.170 AgentDied: agent=GoogleTrustAgent
+    #10 10-06 10:31:42.664 ManagingTrust: agent=ActiveUnlockTrustAgent, managingTrust=true
+    #11 10-06 10:31:42.662 AgentConnected: agent=ActiveUnlockTrustAgent
+    #12 10-06 10:31:42.057 AgentConnected: agent=LockingTrustAgentService
+    #13 10-06 10:31:42.042 AgentConnected: agent=GoogleTrustAgent
+    #14 10-06 10:31:35.762 RevokeTrust: agent=ActiveUnlockTrustAgent
+    #15 10-06 10:31:35.762 AgentDied: agent=ActiveUnlockTrustAgent
+    #16 10-06 10:31:35.707 RevokeTrust: agent=LockingTrustAgentService
+    #17 10-06 10:31:35.707 RevokeTrust: agent=GoogleTrustAgent
+    #18 10-06 10:31:35.707 AgentDied: agent=LockingTrustAgentService
+    #19 10-06 10:31:35.707 AgentDied: agent=GoogleTrustAgent
+    #20 10-05 21:41:40.627 ManagingTrust: agent=ActiveUnlockTrustAgent, managingTrust=true
+    #21 10-05 21:41:40.626 AgentConnected: agent=ActiveUnlockTrustAgent
+    #22 10-05 21:41:38.807 AgentConnected: agent=LockingTrustAgentService
+    #23 10-05 21:41:38.757 AgentConnected: agent=GoogleTrustAgent
+    #24 10-05 21:41:34.544 RevokeTrust: agent=LockingTrustAgentService
+    #25 10-05 21:41:34.544 AgentDied: agent=LockingTrustAgentService
+    #26 10-05 21:41:34.542 RevokeTrust: agent=GoogleTrustAgent
+    #27 10-05 21:41:34.542 AgentDied: agent=GoogleTrustAgent
+    #28 10-05 21:41:34.537 RevokeTrust: agent=ActiveUnlockTrustAgent
+    #29 10-05 21:41:34.538 AgentDied: agent=ActiveUnlockTrustAgent
+    #30 10-05 09:10:36.929 ManagingTrust: agent=ActiveUnlockTrustAgent, managingTrust=true
+    #31 10-05 09:10:36.927 AgentConnected: agent=ActiveUnlockTrustAgent
+    #32 10-05 09:10:35.911 AgentConnected: agent=LockingTrustAgentService
+    #33 10-05 09:10:35.888 AgentConnected: agent=GoogleTrustAgent
+    #34 10-05 09:10:32.810 RevokeTrust: agent=GoogleTrustAgent
+    #35 10-05 09:10:32.810 AgentDied: agent=GoogleTrustAgent
+    #36 10-05 09:10:32.698 RevokeTrust: agent=ActiveUnlockTrustAgent
+    #37 10-05 09:10:32.699 AgentDied: agent=ActiveUnlockTrustAgent
+    #38 10-05 09:10:32.682 RevokeTrust: agent=LockingTrustAgentService
+    #39 10-05 09:10:32.681 AgentDied: agent=LockingTrustAgentService
+    #40 10-04 20:48:27.145 ManagingTrust: agent=ActiveUnlockTrustAgent, managingTrust=true
+    #41 10-04 20:48:27.143 AgentConnected: agent=ActiveUnlockTrustAgent
+    #42 10-04 20:48:26.525 AgentConnected: agent=LockingTrustAgentService
+    #43 10-04 20:48:26.503 AgentConnected: agent=GoogleTrustAgent
+    #44 10-04 20:48:24.899 RevokeTrust: agent=ActiveUnlockTrustAgent
+    #45 10-04 20:48:24.832 AgentDied: agent=ActiveUnlockTrustAgent
+    #46 10-04 20:48:24.782 RevokeTrust: agent=LockingTrustAgentService
+    #47 10-04 20:48:24.778 RevokeTrust: agent=GoogleTrustAgent
+    #48 10-04 20:48:24.778 AgentDied: agent=LockingTrustAgentService
+    #49 10-04 20:48:24.777 AgentDied: agent=GoogleTrustAgent
+
+target service=10193/com.google.android.gms/.chimera.PersistentInternalBoundBrokerService@-2147483648
+connected=true

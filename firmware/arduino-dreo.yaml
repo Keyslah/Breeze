@@ -1,0 +1,7 @@
+board_manager:
+  additional_urls:
+    - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+directories:
+  data: D:/Dev/workspace/Codex/Android/Breeze/.arduino-dreo/data
+  downloads: D:/Dev/workspace/Codex/Android/Breeze/.arduino-dreo/downloads
+  user: C:/Users/aaron/Documents/Arduino

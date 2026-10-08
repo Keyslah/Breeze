@@ -1,0 +1,9 @@
+SERVICE com.aaron.breeze/.BreezeService 1155cc4 pid=21322 user=0
+  Client:
+    status=Connected ready=true firmware=1.2.1
+    packetAgeMs=638 queued=0 pending=none
+    controllerRecords=40748..40748 freeBytes=507904 storageReady=true
+    phoneCursor=40748 transfer=Downloaded and confirmed • controller storage ready
+    telemetryError=0 commandError=0 recording=false
+    lastError=
+    voice=active=false pending=false suppressed=false starting=false archiveBound=false listener=false status=Listening starts automatically with recording.

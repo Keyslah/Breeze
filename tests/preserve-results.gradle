@@ -1,0 +1,10 @@
+// Keep prior reports and avoid Windows locks on the previous result directory.
+def runId = 'run-' + java.util.UUID.randomUUID().toString()
+gradle.taskGraph.whenReady { graph ->
+    graph.allTasks.findAll { it instanceof org.gradle.api.tasks.testing.Test }.each { task ->
+        def output = task.project.layout.buildDirectory.dir('test-results/' + runId + '/' + task.name)
+        task.binaryResultsDirectory.set(output.map { it.dir('binary') })
+        task.reports.junitXml.outputLocation.set(output.map { it.dir('xml') })
+        task.reports.html.outputLocation.set(output.map { it.dir('html') })
+    }
+}

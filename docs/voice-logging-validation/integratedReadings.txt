@@ -1,0 +1,2 @@
+PASS: signed feeling marker heights, actual-time spacing, fixed scale, compact feeling with nearest finite sensor readings, stale gaps excluded, feelings-only selection/zoom/refresh, stable integrated trace checkboxes and night isolation
+
