@@ -2,6 +2,8 @@
 
 Android sensor monitor and XIAO ESP32C6 firmware, with learned manual Dreo IR controls and computer-driven Wi-Fi firmware updates.
 
+Current blocker and agent handoff: [IR transmitter troubleshooting](TROUBLESHOOTING.md), including measurements, completed tests, unresolved questions, and the latest proposed test.
+
 The live Android app handles sensors, recording, history, and Dreo IR only. Android OTA was removed after the physical phone workflow failed; its complete source, docs, and final APK are preserved under `backups/2026-10-03-android-ota-attempt`.
 
 Computer OTA is installed and physically proven on the controller. The one-time USB bootstrap to v1.2.0 was followed by a successful Windows Wi-Fi upload to v1.2.1, reboot, live-sensor recovery, and automatic rollback cancellation after the startup health check. The next v1.2.2 image is built and adds retry protection to that rollback confirmation. Wi-Fi updating uses the ESP32's temporary local access point, not Android, a home router, or the Internet. USB remains the recovery path.
