@@ -9,13 +9,16 @@
 class FanRemote {
  public:
   static constexpr uint8_t SLOT_COUNT=12, NONE=255;
-  enum Action:uint8_t {LEARN=1,CANCEL=2,CLEAR=3,SEND=4,TARGET=5,SYNC=6,AUTO=7,VERIFIED=8,FORGET_STATE=9};
+  enum Action:uint8_t {LEARN=1,CANCEL=2,CLEAR=3,SEND=4,TARGET=5,SYNC=6,AUTO=7,VERIFIED=8,FORGET_STATE=9,RECEIVER_TEST=12};
   enum Error:uint8_t {OK=0,NOT_LEARNED=20,NEED_SYNC=21,BUSY=22,TIMEOUT=23,STORAGE=24,BAD_CAPTURE=25,BAD_VALUE=26,NO_BODY=27,NEED_TEST=28,REMOTE_USED=29,RULES_PENDING=30};
   enum LearnState:uint8_t {IDLE,WAITING,SAVED,EXPIRED,CANCELED,FAILED};
   void begin();
   uint8_t command(const uint8_t* packet);
   void tick(float body0,float body1,float room,uint32_t now);
   void statusPacket(uint8_t* b,float rawBody1,uint8_t phase) const;
+  void receiverTestPacket(uint8_t* b,uint32_t now) const;
+  void receiverInputPacket(uint8_t* b) const;
+  bool receiverTestActive() const {return testState==1||testState==2;}
   void disconnected();
   void cancelAutomatic(uint8_t reason);
  private:
@@ -40,10 +43,21 @@ class FanRemote {
   uint16_t learnCarrier=38;
   uint32_t learningAt=0,lastSend=0,ignoreReceiveUntil=0;
   bool sentOnce=false,rcToggle=false;
+  uint8_t testState=0,testAttempts=0,testMatched=0,testFrames=0,testOverflows=0,testIdle=1;
+  uint16_t testId=0,testRawLen=0;
+  uint32_t testNext=0,testDeadline=0;
+  bool testWindowMatched=false,testWindowSeen=false;
+  uint8_t inputFlags=0,inputSlot=NONE,inputBits=0;
+  int16_t inputProtocol=-1;
+  uint16_t inputSequence=0,inputRawLength=0;
+  uint64_t inputValue=0;
+  uint32_t monitorSendUntil=0;
   float controlBody=NAN,ambient=NAN;
   bool load(uint8_t slot,Learned& code);
   bool save(uint8_t slot,Learned& code);
   void capture(uint32_t now);
+  void receiverTestTick(uint32_t now);
+  void recordReceiverInput(decode_results& result,bool duringSend,bool diagnostic=false);
   uint8_t transmit(uint8_t slot);
   void invalidate(uint8_t reason);
   static uint32_t checksum(const Learned& code);

@@ -71,8 +71,12 @@ uint8_t crc8(const uint8_t* b,int len){uint8_t crc=0;for(int i=0;i<len;i++){crc^
 uint32_t nowEpoch(){return epochBase?epochBase+(esp_timer_get_time()/1000000-clockAt):0;}
 void notifyBytes(uint8_t* b){tx->setValue(b,20);if(connected)tx->notify();}
 uint8_t flags(){return (active?1:0)|(isfinite(probe)?8:0)|(isfinite(room)?16:0)|(isfinite(rh)?32:0);}
-void capabilities(){uint8_t b[20]={4};b[4]=7;b[5]=FIRMWARE_VERSION_MAJOR;b[6]=FIRMWARE_VERSION_MINOR;b[7]=FIRMWARE_VERSION_PATCH;b[8]=CAPABILITY_OTA;b[9]=ota.pendingVerification()?1:0;notifyBytes(b);}
-void telemetry(){capabilities();uint8_t extra[20];fan.statusPacket(extra,secondProbe,testStage);notifyBytes(extra);uint8_t b[20]={1};b[1]=flags()|(active&&storageOK?64:0)|(storageOK?128:0);put16(b+2,++sequence);put16(b+4,isfinite(probe)?lroundf(probe*100):0);put16(b+6,isfinite(room)?lroundf(room*100):0);put16(b+8,isfinite(rh)?lroundf(rh*100):0);put32(b+12,millis()/1000);put16(b+16,ack);b[18]=errorCode;b[19]=commandError;notifyBytes(b);}
+void capabilities(){uint8_t b[20]={4};b[4]=7;b[5]=FIRMWARE_VERSION_MAJOR;b[6]=FIRMWARE_VERSION_MINOR;b[7]=FIRMWARE_VERSION_PATCH;b[8]=CAPABILITY_OTA|2|4;b[9]=ota.pendingVerification()?1:0;notifyBytes(b);}
+void telemetry(){
+  // Confirm the button press before sending supplementary controller status.
+  uint8_t b[20]={1};b[1]=flags()|(active&&storageOK?64:0)|(storageOK?128:0);put16(b+2,++sequence);put16(b+4,isfinite(probe)?lroundf(probe*100):0);put16(b+6,isfinite(room)?lroundf(room*100):0);put16(b+8,isfinite(rh)?lroundf(rh*100):0);put32(b+12,millis()/1000);put16(b+16,ack);b[18]=errorCode;b[19]=commandError;notifyBytes(b);
+  uint8_t extra[20];fan.statusPacket(extra,secondProbe,testStage);notifyBytes(extra);capabilities();fan.receiverTestPacket(extra,millis());notifyBytes(extra);fan.receiverInputPacket(extra);notifyBytes(extra);
+}
 void metadata(){uint8_t b[20]={3};b[1]=active;put32(b+2,baseRecord);put32(b+6,totalRecord);put32(b+10,mounted?LittleFS.totalBytes()-LittleFS.usedBytes():0);b[14]=storageOK;put32(b+15,archiveId);notifyBytes(b);}
 String pathFor(uint32_t n){char p[32];snprintf(p,sizeof(p),"/log_%010lu.bin",(unsigned long)n);return String(p);}
 void openStorage(){
@@ -105,7 +109,7 @@ void serviceComputerOtaTrigger(uint32_t now){
   if(!pressed){otaButtonDownAt=0;otaButtonHandled=false;}
   else if(!otaButtonDownAt)otaButtonDownAt=now?now:1;
   else if(!otaButtonHandled&&uint32_t(now-otaButtonDownAt)>=OTA_BUTTON_HOLD_MS){otaButtonHandled=true;enterComputerOta();}
-  while(Serial.available()){char value=Serial.read();if(value=='u'||value=='U')enterComputerOta();}
+  while(Serial.available()){char value=Serial.read();if(value=='u'||value=='U')enterComputerOta();else if(value=='t'||value=='T'){uint8_t packet[20]={1,6};packet[4]=FanRemote::RECEIVER_TEST;uint8_t result=fan.command(packet);Serial.printf("[IR CHECK] Start result=%u\n",result);}}
   if(!otaConfirmationAttempted&&ota.pendingVerification()&&uint32_t(now-firmwareStartedAt)>=OTA_CONFIRM_HEALTHY_MS&&uint32_t(now-otaConfirmationLastAttemptAt)>=OTA_CONFIRM_RETRY_MS){
     otaConfirmationLastAttemptAt=now;
     otaConfirmationAttempted=ota.confirmRunning()==0;
@@ -157,7 +161,7 @@ void process(const uint8_t* b,uint32_t generation=0){
       if(b[4]==1){
         uint8_t fanState[20];fan.statusPacket(fanState,secondProbe,testStage);
         if(active){commandError=4;break;}
-        if(streaming||fanState[5]||fanState[6]!=FanRemote::NONE){commandError=22;break;}
+        if(streaming||fanState[5]||fanState[6]!=FanRemote::NONE||fan.receiverTestActive()){commandError=22;break;}
         commandError=ota.enter(notifyBytes);
       }else if(b[4]==2)commandError=ota.cancel();
       else if(b[4]==3)commandError=ota.confirmRunning();
@@ -198,7 +202,7 @@ void loop(){
   if(fanDisconnected){fanDisconnected=false;fan.disconnected();}
   if(restartAdvertising){restartAdvertising=false;BLEDevice::startAdvertising();}
   Command command;while(xQueueReceive(commands,&command,0)==pdTRUE)if(connected&&command.connectionGeneration==connectionGeneration)process(command.b,command.connectionGeneration);
-  uint32_t now=millis();serviceComputerOtaTrigger(now);sampleSensors(now);fan.tick(probe,secondProbe,room,now);
+  uint32_t now=millis();serviceComputerOtaTrigger(now);sampleSensors(now);fan.tick(probe,secondProbe,room,millis());
   if(connected&&now-lastNotify>=1000){lastNotify=now;telemetry();}
   if(streaming&&connected&&now-lastStream>=30){lastStream=now;if(streamRecord<totalRecord){File read=LittleFS.open(logPath,FILE_READ);uint8_t b[20];if(read&&streamRecord>=baseRecord&&read.seek((streamRecord-baseRecord)*20)&&read.read(b,20)==20){notifyBytes(b);streamRecord++;}else{streaming=false;commandError=6;}read.close();}else{streaming=false;synced=true;metadata();}}
   ota.tick();

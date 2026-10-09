@@ -2,20 +2,20 @@
 
 Android sensor monitor and XIAO ESP32C6 firmware, with learned manual Dreo IR controls and computer-driven Wi-Fi firmware updates.
 
-Current blocker and agent handoff: [IR transmitter troubleshooting](TROUBLESHOOTING.md), including measurements, completed tests, unresolved questions, and the latest proposed test.
+Current hardware and agent handoff: [IR transmitter troubleshooting](TROUBLESHOOTING.md). Direct D7 drive through 220 Ω now operates the fan at about eight feet; reliable reception through oscillation remains open. The latest app/firmware changes remove queued manual sends and the manual 450 ms cooldown.
 
 The live Android app handles sensors, recording, history, and Dreo IR only. Android OTA was removed after the physical phone workflow failed; its complete source, docs, and final APK are preserved under `backups/2026-10-03-android-ota-attempt`.
 
-Computer OTA is installed and physically proven on the controller. The one-time USB bootstrap to v1.2.0 was followed by a successful Windows Wi-Fi upload to v1.2.1, reboot, live-sensor recovery, and automatic rollback cancellation after the startup health check. The next v1.2.2 image is built and adds retry protection to that rollback confirmation. Wi-Fi updating uses the ESP32's temporary local access point, not Android, a home router, or the Internet. USB remains the recovery path.
+Computer OTA is installed and physically proven on the controller. The latest recorded update installed v1.2.5, confirmed rollback was cleared, and retained the learned remote slots. Source/build-script version defaults still say 1.2.2, so reproduce v1.2.5 with the explicit build below. Wi-Fi updating uses the ESP32's temporary local access point, not Android, a home router, or the Internet. USB remains the recovery path.
 
-To install the next firmware from Windows:
+To rebuild and install firmware 1.2.5 from Windows:
 
 1. Leave the Breeze controller powered and running normally.
-2. Open PowerShell in this folder and run `./firmware/wireless-update.ps1`.
+2. Open PowerShell in this folder, run `./firmware/build-ota.ps1 -BuildPath ./firmware/out-immediate-ir -VersionPatch 5`, then `./firmware/wireless-update.ps1 -FirmwarePath ./firmware/out-immediate-ir/BreezeController.ino.bin`.
 3. When prompted, hold the XIAO's built-in **BOOT** button for two seconds, then release it.
 4. Wait for `Firmware ... was accepted`. The script reconnects the computer to its previous Wi-Fi network when it finishes.
 
-The script builds the next application image, validates its ESP32-C6 header, version marker, size, and SHA-256, temporarily joins `Breeze-OTA-...`, uploads to the inactive OTA slot, and removes the temporary Windows Wi-Fi profile. See [Computer Wi-Fi firmware updates](docs/PC_WIFI_UPDATE.md) for recovery and advanced use.
+The build creates the versioned application image. The uploader validates its ESP32-C6 header, version marker, size, and SHA-256, temporarily joins `Breeze-OTA-...`, uploads to the inactive OTA slot, and removes the temporary Windows Wi-Fi profile. See [Computer Wi-Fi firmware updates](docs/PC_WIFI_UPDATE.md) for recovery and advanced use.
 
 Home shows the raw **D0 body probe**, **D1 body probe**, **SHT40 temperature**, and **humidity** in the dark green granite theme. Temperatures display in Fahrenheit. All local sensors sample every 10 seconds. No motor, servo, PWM, or joystick controls are present. The Fan page provides manual learned IR commands, estimated speed synchronization, and a marked probe test. No automatic temperature rules are defined.
 
@@ -31,7 +31,7 @@ On History, pinch the recorded-night graph to zoom, drag horizontally to pan, an
 - [Validation and hardware limitations](docs/VALIDATION.md)
 - [Silent voice logging: lock and say "Breeze, warm seven"](docs/VOICE-LOGGING.md)
 - Android package: `com.aaron.breeze` (Android 13+)
-- Latest verified Android APK: `app/out-bluetooth-grace-20261008/outputs/apk/debug/app-debug.apk`
+- Latest recorded Android build: `app/out-immediate-ir/outputs/apk/debug/app-debug.apk` (generated locally; see the handoff for validation limits)
 - Firmware: `firmware/BreezeController/BreezeController.ino`
 - Windows updater: `firmware/wireless-update.ps1`
 - OTA partition table: `firmware/BreezeController/partitions.csv`

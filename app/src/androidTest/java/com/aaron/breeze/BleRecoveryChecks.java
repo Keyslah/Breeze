@@ -25,6 +25,8 @@ public final class BleRecoveryChecks {
     private static void check(boolean condition,String message){if(!condition)throw new AssertionError(message);}
     private void main(Runnable action){test.runOnMainSync(action);}
     private FakeService service(){FakeService fake=new FakeService();services.add(fake);return fake;}
+    private void manualReady(FakeService fake){fake.receive(reading(0));fake.irFirmware=true;fake.fan=new Protocol.FanState();fake.fan.time=System.currentTimeMillis();fake.fan.learning=255;fake.fan.learned=4095;}
+    private static int queued(FakeService fake){try{Field field=BreezeService.class.getDeclaredField("queue");field.setAccessible(true);return ((ArrayDeque<?>)field.get(fake)).size();}catch(ReflectiveOperationException error){throw new AssertionError(error);}}
     private static void await(CountDownLatch signal,long timeout,String message)throws InterruptedException {
         check(signal.await(timeout,TimeUnit.MILLISECONDS),message);
     }
@@ -99,6 +101,50 @@ public final class BleRecoveryChecks {
             check(fake.attempts==2&&fake.accepted==1,"busy retry must accept exactly one write");
             check(Arrays.equals(fake.writes.get(0),fake.writes.get(1)),"retry must preserve the complete packet and sequence");
             fake.finishLast();result.successOnce();check(fake.recoveries==0,"transient busy does not discard the connection");
+        });
+    }
+    private void manualBusyIsNotRetried()throws Exception {
+        FakeService fake=service();Results reliable=new Results();
+        main(()->{
+            manualReady(fake);fake.responses.add(BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY);
+            check(!fake.fanCommand(Protocol.SEND_IR,0,0),"busy manual tap must report not sent immediately");
+            check(fake.attempts==1&&fake.accepted==0&&queued(fake)==0&&!fake.fanWritePending(),"unaccepted manual tap has no queued or pending work");
+            check(fake.lastError.startsWith("Not sent"),"busy tap has explicit not-sent feedback");
+            fake.command(seq->Protocol.clock(1800000000L,seq),reliable);
+            check(fake.attempts==2&&fake.accepted==1,"reliable nonmanual command remains available after rejected tap");
+        });
+        SystemClock.sleep(600);
+        main(()->{check(fake.attempts==2,"rejected manual tap cannot retry into a later command");fake.finishLast();reliable.successOnce();check(fake.recoveries==0,"busy manual rejection keeps the connection");});
+    }
+    private void manualAcknowledgedOnceAndNoTapBacklog(){
+        FakeService fake=service();Results followup=new Results();
+        main(()->{
+            manualReady(fake);check(fake.fanCommand(Protocol.SEND_IR,0,0),"free transport accepts Power immediately");
+            check(fake.accepted==1&&queued(fake)==0,"accepted manual tap bypasses the FIFO");
+            check(!fake.fanCommand(Protocol.SEND_IR,1,0)&&!fake.fanCommand(Protocol.SEND_IR,2,0),"additional manual taps are rejected while one write is in flight");
+            check(fake.accepted==1&&queued(fake)==0,"rapid manual taps do not accumulate");
+            int manualSeq=sequence(fake.writes.get(0));fake.ackLast();
+            check(fake.fanWritePending(),"manual ACK still waits for its GATT completion");
+            fake.command(seq->Protocol.control(Protocol.STOP_RECORDING,0,seq),followup);
+            check(queued(fake)==1&&fake.accepted==1,"nonmanual recording action retains normal reliable queue behavior");
+            fake.onWriteCompleted(BluetoothGatt.GATT_SUCCESS);
+            check(fake.accepted==2&&queued(fake)==0,"manual completion advances exactly one reliable successor");
+            fake.receive(reading(manualSeq));check(followup.values.isEmpty()&&fake.accepted==2,"duplicate manual ACK cannot complete or repeat a successor");
+            fake.finishLast();followup.successOnce();
+            check(fake.accepted==2&&queued(fake)==0,"rejected speed taps are never transmitted after completion");
+            check(fake.fanCommand(Protocol.SEND_IR,1,0),"next deliberate tap sends after previous work completes");
+            fake.finishLast();check(fake.accepted==3&&fake.fanCommandStatus.equals("Controller sent Speed +."),"accepted manual execution is confirmed once");
+        });
+    }
+    private void manualDoesNotEnterTargetOrRecordingQueue(){
+        FakeService fake=service();Results target=new Results(),recording=new Results();
+        main(()->{
+            manualReady(fake);fake.command(seq->Protocol.fan(Protocol.TARGET_SPEED,5,0,seq),target);
+            check(!fake.fanCommand(Protocol.SEND_IR,0,0),"manual tap does not wait behind an in-flight target command");
+            fake.command(seq->Protocol.control(Protocol.START_RECORDING,0,seq),recording);
+            check(fake.accepted==1&&queued(fake)==1,"only recording action is queued behind the target");
+            fake.finishLast();target.successOnce();check(fake.accepted==2&&fake.writes.get(1)[1]==2&&fake.writes.get(1)[4]==Protocol.START_RECORDING,"target completion preserves recording FIFO order");
+            fake.finishLast();recording.successOnce();check(fake.accepted==2&&queued(fake)==0,"no rejected manual transmission appears later");
         });
     }
 
@@ -269,6 +315,7 @@ public final class BleRecoveryChecks {
     public static void run(Instrumentation test)throws Exception {
         BleRecoveryChecks checks=new BleRecoveryChecks(test);
         try{
+            checks.manualBusyIsNotRetried();checks.manualAcknowledgedOnceAndNoTapBacklog();checks.manualDoesNotEnterTargetOrRecordingQueue();
             checks.busyThenSuccess();checks.expiredBinderFailsWholeQueue();checks.explicitFailureAndCallbackFailure();
             checks.completionOrdersAndFollowup();checks.bluetoothStateAndTelemetry();
             checks.oldBusyRetryCannotWriteNewCommand();checks.storageCompletionRequiresMetadata();checks.timeoutsDoNotReplay();

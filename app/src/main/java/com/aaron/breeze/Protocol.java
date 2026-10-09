@@ -8,7 +8,7 @@ public final class Protocol {
     private Protocol() {}
     public static final int START_RECORDING=7, STOP_RECORDING=8;
     public static boolean sensorFirmware(byte[] data){return data.length==20&&data[0]==4&&(data[4]&255)>=6;}
-    public static final int LEARN=1,CANCEL_LEARN=2,CLEAR_LEARNED=3,SEND_IR=4,TARGET_SPEED=5,SYNC_SPEED=6,AUTO=7,VERIFIED=8,FORGET_FAN=9,CONTACT_TEST=10,MARK_TEST=11;
+    public static final int LEARN=1,CANCEL_LEARN=2,CLEAR_LEARNED=3,SEND_IR=4,TARGET_SPEED=5,SYNC_SPEED=6,AUTO=7,VERIFIED=8,FORGET_FAN=9,CONTACT_TEST=10,MARK_TEST=11,IR_RECEIVER_TEST=12;
     public static final String[] COMMANDS={"Power","Speed +","Speed -","Mode","Horizontal oscillation","Vertical oscillation","Extra 1","Extra 2","Extra 3","Extra 4","Extra 5","Extra 6"};
     public static class FanState {
         public int flags,speed,target,learning,learnState,learned,error,source,resultSlot,lastSent,sendCounter,phase;
@@ -26,13 +26,52 @@ public final class Protocol {
         return f;
     }
     public static byte[] fan(int action,int value,int argument,int seq){
-        if(action<1||action>11)throw new IllegalArgumentException("Unknown fan action");
+        if(action<1||action>12)throw new IllegalArgumentException("Unknown fan action");
+        if(action==IR_RECEIVER_TEST&&(value!=0||argument!=0))throw new IllegalArgumentException("Invalid LED receiver test setting");
         if(action==MARK_TEST&&(value<1||value>3))throw new IllegalArgumentException("Unknown probe test marker");
         if((action==LEARN||action==CLEAR_LEARNED||action==SEND_IR)&&(value<0||value>=COMMANDS.length))throw new IllegalArgumentException("Unknown remote button");
         if((action==TARGET_SPEED||action==SYNC_SPEED)&&(value<1||value>9))throw new IllegalArgumentException("Speed must be 1–9");
         if(action==LEARN&&(argument<30||argument>60))throw new IllegalArgumentException("Raw carrier must be 30–60 kHz");
         if(action==SYNC_SPEED&&argument!=1)throw new IllegalArgumentException("Confirm fan is on in Normal mode");
         return packet(6,seq).put((byte)action).put((byte)value).putShort((short)argument).array();
+    }
+    public static class IrReceiverTest {
+        public int state,attempts,matched,framesSeen,secondsUntilNext,overflows,testId,error,lastRawLength,rxIdleLevel,carrier,txPin,rxPin;
+        public long time;
+        public boolean active(){return state==1||state==2;}
+        public String description(){
+            if(error!=0)return "LED receiver test stopped: "+Protocol.error(error);
+            return switch(state){
+                case 1 -> "LED test starts in "+secondsUntilNext+" seconds. Aim the LED at the receiver.";
+                case 2 -> "Checking infrared: "+attempts+"/3 bursts sent · "+matched+"/3 detected";
+                case 3 -> matched==3?"PASS: receiver detected 3/3 test bursts":matched==0?(framesSeen==0?"NO IR DETECTED: 0/3":"IR DETECTED: test pattern not matched (0/3)"):"PARTIAL: receiver detected "+matched+"/3 test bursts";
+                case 4 -> "LED receiver test canceled.";
+                default -> "Ready to test the LED with the receiver.";
+            };
+        }
+    }
+    public static IrReceiverTest decodeIrReceiverTest(byte[] data,long time){
+        if(data.length!=20||data[0]!=7||data[19]!=1)throw new IllegalArgumentException("Unsupported LED receiver test packet");
+        ByteBuffer b=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);IrReceiverTest test=new IrReceiverTest();test.time=time;
+        test.state=data[1]&255;test.attempts=data[2]&255;test.matched=data[3]&255;test.framesSeen=data[4]&255;test.secondsUntilNext=data[5]&255;test.overflows=data[6]&255;test.testId=b.getShort(8)&65535;test.error=data[10]&255;test.lastRawLength=b.getShort(11)&65535;test.rxIdleLevel=data[13]&255;test.carrier=data[14]&255;test.txPin=data[15]&255;test.rxPin=data[16]&255;
+        if(test.state>4||test.attempts>3||test.matched>test.attempts||test.framesSeen>test.attempts||test.matched>test.framesSeen||test.secondsUntilNext>5||test.rxIdleLevel>1||test.carrier!=38||test.txPin!=17||test.rxPin!=16)throw new IllegalArgumentException("Invalid LED receiver test packet");
+        return test;
+    }
+    public static class ReceiverInput {
+        public int flags,matchedSlot,bits,protocol,counter,rawLength;
+        public long value,time;
+        public boolean hasInput(){return (flags&1)!=0;}
+        public boolean duringLedSend(){return (flags&2)!=0;}
+        public String source(){return duringLedSend()?"During LED send":"External input";}
+        public String label(){return (flags&16)!=0?"Test burst":matchedSlot<COMMANDS.length?COMMANDS[matchedSlot]:"Unrecognized IR";}
+        public String protocolName(){return switch(protocol){case -1->"Unknown";case 1->"RC5";case 2->"RC6";case 3->"NEC";case 4->"Sony";case 5->"Panasonic";case 6->"JVC";case 7->"Samsung";default->"Protocol #"+protocol;};}
+        public String details(){return protocolName()+" · "+bits+" bits · 0x"+Long.toUnsignedString(value,16).toUpperCase(java.util.Locale.US)+((flags&4)!=0?" · repeat":"")+((flags&8)!=0?" · overflow":"");}
+    }
+    public static ReceiverInput decodeReceiverInput(byte[] data,long time){
+        if(data.length!=20||data[0]!=8||data[19]!=1)throw new IllegalArgumentException("Unsupported receiver input packet");
+        ByteBuffer b=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);ReceiverInput input=new ReceiverInput();input.time=time;input.flags=data[1]&255;input.matchedSlot=data[2]&255;input.bits=data[3]&255;input.protocol=b.getShort(4);input.counter=b.getShort(6)&65535;input.value=b.getLong(8);input.rawLength=b.getShort(16)&65535;
+        if((input.flags&~31)!=0||(input.matchedSlot!=255&&input.matchedSlot>=COMMANDS.length))throw new IllegalArgumentException("Invalid receiver input packet");
+        return input;
     }
     public static final UUID SERVICE = UUID.fromString("689a1001-744d-4aca-89b3-028bc1fe3201");
     public static final UUID TX = UUID.fromString("689a1002-744d-4aca-89b3-028bc1fe3201");

@@ -16,19 +16,22 @@ public final class ControlsChecks {
     }
     private static void refresh(Activity a){try{java.lang.reflect.Method m=MainActivity.class.getDeclaredMethod("refresh");m.setAccessible(true);m.invoke(a);}catch(Exception e){throw new RuntimeException(e);}}
     private static class FakeController extends BreezeService {
-        int started,lastAction=-1; boolean stale;
+        private final Context context;
+        int started,lastAction=-1; boolean stale,manualPending;
+        FakeController(Context context){this.context=context;}
         @Override public boolean fresh(){return ready&&!stale;}
-        @Override public void startSession(){started++;latest.flags|=1;}
-        @Override public void control(int action,int value){lastAction=action;latest.flags&=~1;}
+        @Override public void startSession(){started++;latest.flags|=1;RecordingVoiceController.onTelemetry(context,true);}
+        @Override public void control(int action,int value){lastAction=action;latest.flags&=~1;RecordingVoiceController.onTelemetry(context,false);}
         @Override public boolean freshFan(){return fresh()&&irFirmware&&fan!=null;}
-        @Override public void fanCommand(int action,int value,int argument){lastAction=action;if(action==Protocol.LEARN){fan.learning=value;fan.learnState=1;}else if(action==Protocol.MARK_TEST)fan.phase=value;}
-        @Override public void startContactTest(){latest.flags|=1;fan.phase=1;}
+        @Override public boolean fanWritePending(){return manualPending;}
+        @Override public boolean fanCommand(int action,int value,int argument){lastAction=action;if(action==Protocol.LEARN){fan.learning=value;fan.learnState=1;}else if(action==Protocol.MARK_TEST)fan.phase=value;return true;}
+        @Override public void startContactTest(){latest.flags|=1;fan.phase=1;RecordingVoiceController.onTelemetry(context,true);}
         @Override public void changed(){}
     }
     private static String temperature(double c,boolean f){return String.format(Locale.US,"%.1f°%s",f?c*1.8+32:c,f?"F":"C");}
     public static void run(Instrumentation test)throws Exception {
         Context context=test.getTargetContext();boolean originalF=true;
-        FakeController fake=new FakeController();fake.ready=true;fake.sensorFirmware=true;fake.latest=new Protocol.Reading();fake.latest.flags=128;fake.latest.probe=31.3;fake.latest.room=23.1;fake.latest.humidity=58.2;fake.irFirmware=true;fake.fan=new Protocol.FanState();fake.fan.secondProbe=30.5;fake.fan.learning=255;fake.fan.resultSlot=255;fake.fan.lastSent=255;
+        FakeController fake=new FakeController(context);fake.ready=true;fake.sensorFirmware=true;fake.latest=new Protocol.Reading();fake.latest.flags=128;fake.latest.probe=31.3;fake.latest.room=23.1;fake.latest.humidity=58.2;fake.irFirmware=true;fake.fan=new Protocol.FanState();fake.fan.secondProbe=30.5;fake.fan.learning=255;fake.fan.resultSlot=255;fake.fan.lastSent=255;
         test.runOnMainSync(()->{check(BreezeService.current==null,"real service must be stopped");BreezeService.current=fake;});
         Activity activity=null;
         try{
@@ -51,6 +54,8 @@ public final class ControlsChecks {
                 find(root,"Setup").performClick();root=screen.getWindow().getDecorView();check(find(root,"Firmware Update")==null,"firmware update is absent from Setup");check(find(root,"Start recording")==null&&find(root,"Stop recording")==null,"Setup does not duplicate Home recording controls");
                 find(root,"Home").performClick();root=screen.getWindow().getDecorView();fake.sensorFirmware=false;refresh(screen);check(!find(root,"Start recording").isEnabled(),"old firmware cannot start recording");
                 fake.sensorFirmware=true;find(root,"Fan").performClick();root=screen.getWindow().getDecorView();
+                check(find(root,"RECEIVER")==null,"canceled receiver panel remains hidden");
+                fake.manualPending=true;refresh(screen);check(find(root,"Power").isEnabled()&&find(root,"Speed +").isEnabled()&&find(root,"Speed -").isEnabled(),"manual taps stay available for immediate busy feedback");fake.manualPending=false;refresh(screen);
                 check(find(root,"Automatic control · off")==null,"unused automatic control placeholder removed");
                 find(root,"Start probe test").performClick();refresh(screen);find(root,"Mark: lying on probes").performClick();check(fake.fan.phase==2,"lying marker routes");find(root,"Mark: off probes").performClick();check(fake.fan.phase==3,"off marker routes");find(root,"Stop probe test").performClick();refresh(screen);
                 find(root,"Learn Remote").performClick();root=screen.getWindow().getDecorView();find(root,"Learn").performClick();refresh(screen);check(find(root,"Point the Dreo remote at the ESP32 and press Power.")!=null,"learn workflow waits for controller");check(find(root,"Learned")==null,"not optimistically saved");
@@ -59,7 +64,7 @@ public final class ControlsChecks {
             });
         }finally{
             if(activity!=null){Activity closing=activity;test.runOnMainSync(closing::finish);test.waitForIdleSync();}
-            test.runOnMainSync(()->BreezeService.current=null);
+            test.runOnMainSync(()->{RecordingVoiceController.startFailed(context);RecordingVoiceController.onTelemetry(context,false);BreezeService.current=null;});
 
         }
     }

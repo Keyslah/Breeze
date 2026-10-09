@@ -27,11 +27,15 @@ public class BreezeService extends Service {
     public boolean sensorFirmware=false;
     public boolean irFirmware=false;
     public Protocol.FanState fan;
-    public static String delayedPowerTestStatus="";
-    public static int delayedPowerSeconds;
-    private android.media.ToneGenerator powerTestTone;
-    private boolean delayedPowerTestActive;
-    private int delayedPowerTestGeneration;
+    public boolean irReceiverTestSupported;
+    public Protocol.IrReceiverTest irReceiverTest;
+    public String irReceiverTestStatus="";
+    private boolean irReceiverTestRunning,irReceiverTestRequested;
+    private int irReceiverTestGeneration,irReceiverPreviousTestId=-1;
+    public boolean receiverMonitorSupported;
+    public Protocol.ReceiverInput receiverInput,lastExternalReceiverInput,lastLedReceiverInput;
+    private int receiverMonitorCounter=-1;
+    public String fanCommandStatus="";
     public boolean ready=false, scanning=false;
     public long selectedSession=-1, controllerCount=0, controllerBase=0;
     public long controllerFreeBytes=-1;
@@ -154,8 +158,10 @@ public class BreezeService extends Service {
         if(!visibleForBluetooth()||b.length!=20)return;
         try {
             ByteBuffer p=ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN);
-            if(b[0]==4){sensorFirmware=Protocol.sensorFirmware(b);irFirmware=sensorFirmware&&(b[4]&255)>=7;controllerFirmware=(b[5]&255)+"."+(b[6]&255)+"."+(b[7]&255);changed();}
+            if(b[0]==4){sensorFirmware=Protocol.sensorFirmware(b);irFirmware=sensorFirmware&&(b[4]&255)>=7;irReceiverTestSupported=irFirmware&&(b[8]&2)!=0;receiverMonitorSupported=irFirmware&&(b[8]&4)!=0;controllerFirmware=(b[5]&255)+"."+(b[6]&255)+"."+(b[7]&255);changed();}
             else if(b[0]==5){fan=Protocol.decodeFan(b,System.currentTimeMillis());changed();}
+            else if(b[0]==7){receiveIrReceiverTest(Protocol.decodeIrReceiverTest(b,System.currentTimeMillis()));}
+            else if(b[0]==8){receiveReceiverInput(Protocol.decodeReceiverInput(b,System.currentTimeMillis()));}
             else if(b[0]==1){latest=Protocol.decode(b,System.currentTimeMillis());lastPacket=SystemClock.elapsedRealtime();if(current==this)RecordingVoiceController.onTelemetry(this,latest.active());if(pending!=null&&pending.submitted&&latest.ack==pending.seq){pending.acknowledged=true;pending.error=latest.commandError;completeCommand();}changed();}
             else if(b[0]==2||b[0]==6){long index=Integer.toUnsignedLong(p.getInt(2)),cursor=store.cursor(deviceId);if(index==cursor){long id=store.ingest(deviceId,b);if(id>=0)selectedSession=id;transfer="Saved "+store.cursor(deviceId)+" controller records to this phone";if(index%15==0)changed();}else if(index>cursor&&!syncQueued)download();}
             else if(b[0]==3){deviceId=deviceAddress+":"+Integer.toUnsignedLong(p.getInt(15));controllerBase=Integer.toUnsignedLong(p.getInt(2));controllerCount=Integer.toUnsignedLong(p.getInt(6));controllerFreeBytes=Integer.toUnsignedLong(p.getInt(10));controllerStorageReady=b[14]!=0;if(current==this)RecordingVoiceController.onRecordingMetadata(this,deviceId,controllerCount,b[1]!=0);long cursor=store.cursor(deviceId);if(cursor<controllerBase){store.setCursor(deviceId,controllerBase);lastError="Earlier records were already transferred elsewhere. Downloading remaining records.";cursor=controllerBase;}
@@ -204,53 +210,69 @@ public class BreezeService extends Service {
     public void control(int action,int value){if(!sensorFirmware||(action!=Protocol.STOP_RECORDING&&action!=6)){lastError="Sensor firmware required for this action.";changed();return;}command(s->Protocol.control(action,value,s),ok->{if(ok&&action==Protocol.STOP_RECORDING)download();});}
     public boolean freshFan(){return fresh()&&irFirmware&&fan!=null&&System.currentTimeMillis()-fan.time<6000;}
     public boolean fanWritePending(){if(pending!=null&&pending.bytes[1]==6)return true;for(Pending item:queue)if(item.bytes[1]==6)return true;return false;}
-    public boolean delayedPowerTestActive(){return delayedPowerTestActive;}
-    public boolean startDelayedPowerTest(){
-        if(delayedPowerTestActive){lastError="Power test is already running.";return false;}
+    public boolean irReceiverTestActive(){return irReceiverTestRunning||irReceiverTestRequested;}
+    public boolean startIrReceiverTest(){
+        if(irReceiverTestActive()){lastError="The LED receiver test is already running.";changed();return false;}
         if(!freshFan()){lastError="Wait for the controller to connect and send fresh readings.";changed();return false;}
-        if(!fan.has(0)){lastError="Learn Power before starting this test.";changed();return false;}
-        if(fan.learning!=255||fanWritePending()){lastError="Wait for the current controller command to finish.";changed();return false;}
-        delayedPowerTestActive=true;final int generation=++delayedPowerTestGeneration;
-        delayedPowerSeconds=5;powerTestBeep();
-        delayedPowerTestStatus="Power test starts in 5 seconds. Open Camera now.";
-        android.util.Log.i(TAG,delayedPowerTestStatus);changed();
-        for(int elapsed=1;elapsed<5;elapsed++){final int seconds=5-elapsed;
-            handler.postDelayed(()->{if(delayedPowerTestActive&&generation==delayedPowerTestGeneration){delayedPowerSeconds=seconds;delayedPowerTestStatus="Starting in "+seconds+" seconds. Open Camera now.";changed();}},elapsed*1000L);
-        }
-        handler.postDelayed(()->sendDelayedPower(generation,0),5000);
-        handler.postDelayed(()->{if(delayedPowerTestActive&&generation==delayedPowerTestGeneration)finishDelayedPowerTest("Power test stopped: controller timed out.");},15000);
+        if(!irReceiverTestSupported){lastError="Update the controller firmware to enable the LED receiver test.";changed();return false;}
+        if(fan.learning!=255||fan.busy()||fanWritePending()){lastError="Wait for learning or the current fan command to finish.";changed();return false;}
+        irReceiverTestRequested=true;irReceiverPreviousTestId=irReceiverTest==null?-1:irReceiverTest.testId;final int generation=++irReceiverTestGeneration;
+        irReceiverTestStatus="LED receiver test requested. Aim the LED at the receiver; the controller starts in 5 seconds.";lastError="";changed();
+        command(s->Protocol.fan(Protocol.IR_RECEIVER_TEST,0,0,s),ok->{
+            if(generation!=irReceiverTestGeneration)return;
+            if(!ok){irReceiverTestRequested=false;irReceiverTestRunning=false;irReceiverTestStatus="LED receiver test could not start: "+lastError;changed();}
+        });
+        handler.postDelayed(()->{if(generation==irReceiverTestGeneration&&irReceiverTestActive()){irReceiverTestRequested=false;irReceiverTestRunning=false;irReceiverTestStatus="LED receiver test result unavailable: controller timed out. Reconnect before retrying.";lastError=irReceiverTestStatus;changed();}},25000);
         return true;
     }
-    private void powerTestBeep(){try{if(powerTestTone==null)powerTestTone=new android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION,80);powerTestTone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP,150);}catch(RuntimeException e){android.util.Log.w(TAG,"Power test sound unavailable",e);}}
-    private void releasePowerTestTone(){if(powerTestTone!=null){powerTestTone.release();powerTestTone=null;}}
-    private void sendDelayedPower(int generation,int sent){
-        if(!delayedPowerTestActive||generation!=delayedPowerTestGeneration)return;
-        delayedPowerSeconds=0;
-        if(!freshFan()){finishDelayedPowerTest("Power test stopped: controller disconnected.");return;}
-        command(s->Protocol.fan(Protocol.SEND_IR,0,0,s),ok->{
-            if(!delayedPowerTestActive||generation!=delayedPowerTestGeneration)return;
-            if(!ok){finishDelayedPowerTest("Power test stopped: "+lastError);return;}
-            int count=sent+1;
-            powerTestBeep();
-            delayedPowerTestStatus="Power test: "+count+" of 3 sent.";
-            android.util.Log.i(TAG,delayedPowerTestStatus+" IR counter="+(fan==null?-1:fan.sendCounter));changed();
-            if(count==3)finishDelayedPowerTest("Power test complete: 3 commands sent.");
-            else handler.postDelayed(()->sendDelayedPower(generation,count),1000);
-        });
+    private void receiveIrReceiverTest(Protocol.IrReceiverTest result){
+        if(irReceiverTestRequested&&result.testId==irReceiverPreviousTestId)return;
+        irReceiverTest=result;
+        if(result.state!=0){irReceiverTestRequested=false;irReceiverTestRunning=result.active();irReceiverTestStatus=result.description();}
+        else if(!irReceiverTestRequested){irReceiverTestRunning=false;if(irReceiverTestStatus.isEmpty())irReceiverTestStatus=result.description();}
+        android.util.Log.i(TAG,"LED receiver test: id="+result.testId+" state="+result.state+" attempts="+result.attempts+" matched="+result.matched+" frames="+result.framesSeen+" error="+result.error);changed();
     }
-    private void finishDelayedPowerTest(String message){
-        delayedPowerTestActive=false;delayedPowerTestGeneration++;delayedPowerSeconds=0;delayedPowerTestStatus=message;
-        handler.postDelayed(()->{if(!delayedPowerTestActive)releasePowerTestTone();},300);
-        android.util.Log.i(TAG,message);changed();
-        if(!visibleForBluetooth())stopForUi();
+    private void receiveReceiverInput(Protocol.ReceiverInput input){
+        if(!input.hasInput()){if(receiverInput==null){receiverInput=input;changed();}return;}
+        if(input.counter==receiverMonitorCounter)return;
+        receiverMonitorCounter=input.counter;receiverInput=input;
+        if(input.duringLedSend())lastLedReceiverInput=input;else lastExternalReceiverInput=input;
+        android.util.Log.i(TAG,"Receiver input #"+input.counter+": "+input.source()+" · "+input.label()+" · "+input.details());changed();
     }
-    public void fanCommand(int action,int value,int argument){
-        if(delayedPowerTestActive){lastError="Wait for the three-press Power test to finish.";changed();return;}
-        if(!freshFan()){lastError="Wait for fresh IR-controller telemetry.";changed();return;}
-        if(fanWritePending()){lastError="Wait for the controller to confirm the previous command.";changed();return;}
-        try{Protocol.fan(action,value,argument,1);command(s->Protocol.fan(action,value,argument,s),ok->changed());}catch(IllegalArgumentException e){lastError=e.getMessage();changed();}
+    public boolean fanCommand(int action,int value,int argument){
+        if(irReceiverTestActive()){lastError="Wait for the LED receiver test to finish.";changed();return false;}
+        if(!freshFan()){lastError="Wait for fresh IR-controller telemetry.";changed();return false;}
+        if(action==Protocol.SEND_IR){
+            try{Protocol.fan(action,value,argument,1);}catch(IllegalArgumentException error){return rejectManualIr(error.getMessage());}
+            if(fan.learning!=255)return rejectManualIr("learning is active.");
+            if(!fan.has(value))return rejectManualIr("learn "+Protocol.COMMANDS[value]+" first.");
+            return sendManualIr(value);
+        }
+        if(fanWritePending()){lastError="Wait for the controller to confirm the previous command.";changed();return false;}
+        try{Protocol.fan(action,value,argument,1);command(s->Protocol.fan(action,value,argument,s),ok->changed());return true;}catch(IllegalArgumentException e){lastError=e.getMessage();changed();return false;}
+    }
+    private boolean rejectManualIr(String reason){lastError="Not sent—"+reason;fanCommandStatus=lastError;changed();return false;}
+    private boolean sendManualIr(int slot){
+        // A manual tap is useful now; never put it behind another command or retry it later.
+        if(pending!=null||!queue.isEmpty())return rejectManualIr("controller busy. Tap again.");
+        if(!visibleForBluetooth()||!ready||!allowed()||!transportAvailable())return rejectManualIr("controller disconnected.");
+        seq=seq%65535+1;
+        Pending sent=new Pending(Protocol.fan(Protocol.SEND_IR,slot,0,seq),seq,ok->{fanCommandStatus=ok?"Controller sent "+Protocol.COMMANDS[slot]+".":"Send failed: "+lastError;changed();});
+        BluetoothGatt connection=gatt;pending=sent;
+        try{
+            int result=submitWrite(sent.bytes);
+            if(result!=BluetoothStatusCodes.SUCCESS){
+                pending=null;
+                if(result==BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY)return rejectManualIr("Bluetooth busy. Tap again.");
+                recoverConnection("Bluetooth connection unavailable ("+result+"). Reconnecting…");return rejectManualIr("controller connection unavailable ("+result+").");
+            }
+            sent.submitted=true;sent.deadline=SystemClock.elapsedRealtime()+COMMAND_TIMEOUT_MS;
+            handler.postDelayed(()->commandTimedOut(sent,connection),COMMAND_TIMEOUT_MS);
+            lastError="";fanCommandStatus="Sending "+Protocol.COMMANDS[slot]+"…";changed();return true;
+        }catch(RuntimeException error){pending=null;android.util.Log.w(TAG,"Manual IR write could not be submitted",error);recoverConnection("Bluetooth connection expired. Reconnecting…");return rejectManualIr("controller connection expired.");}
     }
     public void startContactTest(){
+        if(irReceiverTestActive()){lastError="Wait for the LED receiver test to finish.";recordingStartFailed();changed();return;}
         if(!freshFan()){lastError="Connect the updated IR controller first.";recordingStartFailed();changed();return;}
         if(latest.active()){lastError="Stop the current recording before starting a probe test.";recordingStartFailed();changed();return;}
         command(s->Protocol.clock(System.currentTimeMillis()/1000,s),ok->{if(ok)command(s->Protocol.fan(Protocol.CONTACT_TEST,0,0,s),started->{if(started)download();else recordingStartFailed();});else recordingStartFailed();});
@@ -262,18 +284,20 @@ public class BreezeService extends Service {
         out.println("controllerRecords="+controllerBase+".."+controllerCount+" freeBytes="+controllerFreeBytes+" storageReady="+controllerStorageReady);
         out.println("phoneCursor="+(store==null?-1:store.cursor(deviceId))+" transfer="+transfer);
         out.println("telemetryError="+(latest==null?-1:latest.error)+" commandError="+(latest==null?-1:latest.commandError)+" recording="+(latest!=null&&latest.active()));
+        out.println("irReceiverTestSupported="+irReceiverTestSupported+" active="+irReceiverTestActive()+" status="+irReceiverTestStatus);
+        if(irReceiverTest!=null)out.println("irReceiverTestId="+irReceiverTest.testId+" state="+irReceiverTest.state+" attempts="+irReceiverTest.attempts+" matched="+irReceiverTest.matched+" framesSeen="+irReceiverTest.framesSeen+" overflows="+irReceiverTest.overflows+" lastRawLength="+irReceiverTest.lastRawLength+" rxIdleLevel="+irReceiverTest.rxIdleLevel+" carrier="+irReceiverTest.carrier+" txPin="+irReceiverTest.txPin+" rxPin="+irReceiverTest.rxPin+" error="+irReceiverTest.error);
+        out.println("receiverMonitorSupported="+receiverMonitorSupported+" fanCommandStatus="+fanCommandStatus);
+        if(receiverInput!=null)out.println("receiverInputCounter="+receiverInput.counter+" hasInput="+receiverInput.hasInput()+" source="+receiverInput.source()+" label="+receiverInput.label()+" protocol="+receiverInput.protocol+" bits="+receiverInput.bits+" value="+Long.toUnsignedString(receiverInput.value,16)+" rawLength="+receiverInput.rawLength+" flags="+receiverInput.flags);
         out.println("lastError="+lastError);
         out.println("voice="+RecordingVoiceController.describe());
     }
-    private void closeGatt(){ready=false;rx=null;latest=null;lastPacket=readySince=0;sensorFirmware=false;irFirmware=false;fan=null;controllerFreeBytes=-1;controllerStorageReady=false;controllerFirmware="unknown";BluetoothGatt old=gatt;gatt=null;if(old!=null){try{if(allowed())old.disconnect();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not disconnect expired Bluetooth handle",e);}try{old.close();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not close expired Bluetooth handle",e);}}}
+    private void closeGatt(){if(irReceiverTestActive()){irReceiverTestRequested=false;irReceiverTestRunning=false;irReceiverTestGeneration++;irReceiverTestStatus="LED receiver test result unavailable: controller disconnected.";}receiverMonitorSupported=false;receiverMonitorCounter=-1;ready=false;rx=null;latest=null;lastPacket=readySince=0;sensorFirmware=false;irFirmware=false;irReceiverTestSupported=false;fan=null;controllerFreeBytes=-1;controllerStorageReady=false;controllerFirmware="unknown";BluetoothGatt old=gatt;gatt=null;if(old!=null){try{if(allowed())old.disconnect();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not disconnect expired Bluetooth handle",e);}try{old.close();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not close expired Bluetooth handle",e);}}}
     private void stopForUi(){
-        delayedPowerSeconds=0;releasePowerTestTone();
-        if(delayedPowerTestActive){delayedPowerTestActive=false;delayedPowerTestGeneration++;delayedPowerTestStatus="Power test canceled.";}
         stoppedForUi=true;
         handler.removeCallbacksAndMessages(null);stopScan();closeGatt();devices.clear();
         if(current==this)current=null;
         failQueue("Phone disconnected. Records remain on the controller.");status="Disconnected";
         stopForeground(STOP_FOREGROUND_REMOVE);foregroundStarted=false;stopSelf();
     }
-    @Override public void onDestroy(){destroyed=true;delayedPowerTestActive=false;delayedPowerTestGeneration++;delayedPowerSeconds=0;releasePowerTestTone();unregisterReceiver(bluetoothState);stopScan();closeGatt();failQueue("Phone disconnected. Records remain on the controller.");handler.removeCallbacksAndMessages(null);if(store!=null)store.close();if(current==this)current=null;super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;unregisterReceiver(bluetoothState);stopScan();closeGatt();failQueue("Phone disconnected. Records remain on the controller.");handler.removeCallbacksAndMessages(null);if(store!=null)store.close();if(current==this)current=null;super.onDestroy();}
 }

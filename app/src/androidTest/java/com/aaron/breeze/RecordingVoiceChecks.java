@@ -39,7 +39,7 @@ public final class RecordingVoiceChecks {
         @Override public void control(int action, int value) { throw new AssertionError("Unexpected controller mutation"); }
         @Override public void download() { throw new AssertionError("Unexpected controller transfer"); }
         @Override public void startContactTest() { throw new AssertionError("Unexpected probe command"); }
-        @Override public void fanCommand(int action, int value, int argument) { throw new AssertionError("Unexpected fan command"); }
+        @Override public boolean fanCommand(int action, int value, int argument) { throw new AssertionError("Unexpected fan command"); }
     }
 
     public static String run(Instrumentation test) throws Exception {

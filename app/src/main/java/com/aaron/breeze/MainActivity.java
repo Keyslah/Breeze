@@ -27,12 +27,14 @@ public class MainActivity extends Activity {
     private int visibleSeries=GraphView.ALL_SERIES;
     private long selected=-1;
     private TextView connection,probeValue,secondProbeValue,climate,humidityValue,status,transfer,graphHeading,notice,fanStatus,learningStatus,testStatus;
-    private final List<Button> remoteButtons=new ArrayList<>(),targetButtons=new ArrayList<>(),learnButtons=new ArrayList<>(),testButtons=new ArrayList<>(),clearButtons=new ArrayList<>();
+    private final List<Button> remoteButtons=new ArrayList<>(),targetButtons=new ArrayList<>(),learnButtons=new ArrayList<>(),testButtons=new ArrayList<>(),clearButtons=new ArrayList<>(),fanUtilityButtons=new ArrayList<>();
     private final List<TextView> learnedLabels=new ArrayList<>();
     private Button startProbeTest,onProbes,offProbes,stopProbeTest;
     private Button sessionButton;
-    private Button delayedPowerButton;
-    private TextView delayedPowerStatus;
+    private TextView receiverLatest,receiverExternal,receiverLed,receiverSendStatus;
+    private Toast manualFeedback;
+    private Button irReceiverTestButton;
+    private TextView irReceiverTestStatus;
     private GraphView graph;
     private TextView bedtimeStatus;
     private TextView lastFeelingStatus;
@@ -58,7 +60,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume(){super.onResume();activityResumed=true;IntentFilter filter=new IntentFilter(BreezeService.UPDATE);filter.addAction(BedtimeVoiceService.UPDATE);filter.addAction(Store.FEELINGS_CHANGED);registerReceiver(updates,filter,Context.RECEIVER_NOT_EXPORTED);BreezeService.setUiVisible(this,true);if(BreezeService.current==null&&canUseBluetooth()&&Settings.prefs(this).contains("device")&&checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==PackageManager.PERMISSION_GRANTED&&checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED)BreezeService.startForVisibleUi(this,false);handler.post(tick);}
     @Override protected void onPause(){activityResumed=false;BreezeService.setUiVisible(this,false);handler.removeCallbacks(tick);unregisterReceiver(updates);super.onPause();}
     private boolean canUseBluetooth(){return activityResumed&&getSystemService(PowerManager.class).isInteractive()&&!getSystemService(KeyguardManager.class).isKeyguardLocked();}
-    @Override protected void onDestroy(){worker.shutdown();store.close();super.onDestroy();}
+    @Override protected void onDestroy(){if(manualFeedback!=null)manualFeedback.cancel();worker.shutdown();store.close();super.onDestroy();}
     private int dp(float v){return Math.round(v*getResources().getDisplayMetrics().density);}
     private LinearLayout col(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
     private LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.HORIZONTAL);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
@@ -71,7 +73,7 @@ public class MainActivity extends Activity {
     private void addButton(LinearLayout p,String title,boolean primary,Runnable action){Button b=button(title,primary,action);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(48));lp.topMargin=dp(8);p.addView(b,lp);}
     private void two(LinearLayout p,String a,Runnable aa,String b,Runnable bb){LinearLayout r=row();Button x=button(a,false,aa),y=button(b,false,bb);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),1);lp.setMargins(dp(3),dp(8),dp(3),0);r.addView(x,lp);r.addView(y,new LinearLayout.LayoutParams(lp));p.addView(r);}
     private void build(){
-        delayedPowerButton=null;delayedPowerStatus=null;
+        receiverLatest=null;receiverExternal=null;receiverLed=null;receiverSendStatus=null;irReceiverTestButton=null;irReceiverTestStatus=null;fanUtilityButtons.clear();
         bedtimeStatus=null;bedtimeButton=null;disableListening=null;lastFeelingStatus=null;feelingEntries=null;unassignedFeelings=null;unassignedStamp="";
         connection=null;probeValue=null;secondProbeValue=null;climate=null;humidityValue=null;graph=null;graphHeading=null;status=null;transfer=null;notice=null;sessionButton=null;fanStatus=null;learningStatus=null;testStatus=null;startProbeTest=null;onProbes=null;offProbes=null;stopProbeTest=null;remoteButtons.clear();targetButtons.clear();learnButtons.clear();testButtons.clear();clearButtons.clear();learnedLabels.clear();
         shell=col();shell.setBackground(new GraniteDrawable());shell.setPadding(dp(20),0,dp(20),0);shell.setOnApplyWindowInsetsListener((v,insets)->{android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars());v.setPadding(dp(20),bars.top,dp(20),bars.bottom);return insets;});setContentView(shell);
@@ -125,23 +127,37 @@ public class MainActivity extends Activity {
         try{RecordingVoiceController.prepareStart(this);if(probeTest)controller.startContactTest();else controller.startSession();}
         catch(RuntimeException failure){error("Could not prepare voice listening. Keep Breeze open and try again. "+failure.getMessage());}
     }
-    private void sendFan(int action,int value,int argument){if(service())BreezeService.current.fanCommand(action,value,argument);}
+    private void sendFan(int action,int value,int argument){if(service()){
+        BreezeService controller=BreezeService.current;
+        boolean accepted=controller.fanCommand(action,value,argument);
+        if(action==Protocol.SEND_IR){if(accepted){getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.CONFIRM);manualFeedback("Sending "+Protocol.COMMANDS[value]+"…");}else manualFeedback(controller.lastError.startsWith("Not sent")?controller.lastError:"Not sent—"+controller.lastError);}
+        refresh();
+    }}
     private void fanConnection(LinearLayout c){connection=text("Controller connection",14,TEAL);c.addView(connection);notice=text("",13,0xffedb597);c.addView(notice);}
-    private void delayedPowerControl(LinearLayout c){
-        delayedPowerButton=button("Power ×3 after 5 seconds",true,()->{if(service()){
+    private void receiverCard(){
+        LinearLayout receiver=card();receiver.addView(bold("RECEIVER",16,TEAL));
+        receiverLatest=bold("No infrared input received yet.",16,INK);receiver.addView(receiverLatest);
+        receiverExternal=text("External input · —",12,MUTED);receiver.addView(receiverExternal);
+        receiverLed=text("During LED send · —",12,MUTED);receiver.addView(receiverLed);
+        receiverSendStatus=text("",12,TEAL);receiver.addView(receiverSendStatus);
+        receiver.addView(text("Press Power on the remote, then aim the LED at the receiver and tap Power below to compare.",12,MUTED));
+    }
+    private void irReceiverTestControl(LinearLayout c){
+        irReceiverTestButton=button("Test LED → receiver",true,()->{if(service()){
             BreezeService controller=BreezeService.current;
-            if(controller.startDelayedPowerTest()){delayedPowerButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);toast("Test scheduled. Starts in 5 seconds—open Camera now.");}
+            if(controller.startIrReceiverTest()){irReceiverTestButton.performHapticFeedback(HapticFeedbackConstants.CONFIRM);toast("LED test scheduled. Aim the LED at the receiver; starts in 5 seconds.");}
             else toast(controller.lastError);
             refresh();
         }});
-        c.addView(delayedPowerButton,new LinearLayout.LayoutParams(-1,dp(54)));
-        delayedPowerStatus=bold("",18,TEAL);c.addView(delayedPowerStatus);
-        c.addView(text("Open Camera after tapping. Sends three Power commands one second apart while Camera stays open.",13,MUTED));
+        c.addView(irReceiverTestButton,new LinearLayout.LayoutParams(-1,dp(54)));
+        irReceiverTestStatus=bold("",18,TEAL);c.addView(irReceiverTestStatus);
+        c.addView(text("Reconnect the receiver to D6, 3V3 and GND. Aim the transmitter LED at it from 10–30 cm away. The controller checks three infrared test bursts and reports how many it detects.",13,MUTED));gap(c,10);
     }
+    private void addFanUtilityButton(LinearLayout c,String title,Runnable action){Button control=button(title,false,action);LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-1,dp(48));params.topMargin=dp(8);c.addView(control,params);fanUtilityButtons.add(control);}
     private void fanPage(){
         LinearLayout c=card();c.addView(bold("Dreo fan",22,INK));fanConnection(c);fanStatus=text("",14,INK);c.addView(fanStatus);c.addView(text("IR has no fan feedback. Speed is an estimate. Sync again after using the fan's buttons, its original remote, or after a power loss.",13,MUTED));
-        delayedPowerControl(c);
-        addButton(c,"Sync / set current speed",false,this::syncFan);addButton(c,"Cancel / forget speed estimate",false,()->sendFan(Protocol.FORGET_FAN,0,0));
+        irReceiverTestControl(c);
+        addFanUtilityButton(c,"Sync / set current speed",this::syncFan);addFanUtilityButton(c,"Cancel / forget speed estimate",()->sendFan(Protocol.FORGET_FAN,0,0));
         LinearLayout manual=card();manual.addView(bold("Manual controls",20,INK));
         for(int slot=0;slot<6;slot++){final int chosen=slot;Button b=button(Protocol.COMMANDS[slot],slot==0,()->sendFan(Protocol.SEND_IR,chosen,0));manual.addView(b,new LinearLayout.LayoutParams(-1,dp(48)));gap(manual,6);remoteButtons.add(b);}
         manual.addView(text("Target speed · requires a synchronized estimate",13,MUTED));
@@ -161,8 +177,8 @@ public class MainActivity extends Activity {
     }
     private void learnRemote(){
         LinearLayout c=card();c.addView(bold("Learn Remote",22,INK));fanConnection(c);learningStatus=text("",14,INK);c.addView(learningStatus);c.addView(text("Point the Dreo remote at the receiver and press the requested button once. Learning may also operate the real fan. The old command stays saved until the new capture is stored successfully.",13,MUTED));
-        delayedPowerControl(c);
-        c.addView(text("Raw replay carrier (kHz)",13,MUTED));EditText carrier=new EditText(this);carrier.setInputType(InputType.TYPE_CLASS_NUMBER);carrier.setText("38");c.addView(carrier);c.addView(text("38 kHz is the receiver's nominal frequency. It cannot measure the remote's carrier; verify replay on the fan.",12,MUTED));addButton(c,"Cancel learning",false,()->sendFan(Protocol.CANCEL_LEARN,0,0));
+        irReceiverTestControl(c);
+        c.addView(text("Raw replay carrier (kHz)",13,MUTED));EditText carrier=new EditText(this);carrier.setInputType(InputType.TYPE_CLASS_NUMBER);carrier.setText("38");c.addView(carrier);c.addView(text("38 kHz is the receiver's nominal frequency. It cannot measure the remote's carrier; verify replay on the fan.",12,MUTED));addFanUtilityButton(c,"Cancel learning",()->sendFan(Protocol.CANCEL_LEARN,0,0));
         for(int slot=0;slot<Protocol.COMMANDS.length;slot++){final int chosen=slot;LinearLayout item=card();item.addView(bold(Protocol.COMMANDS[slot],18,INK));TextView label=text("Not learned",13,MUTED);item.addView(label);learnedLabels.add(label);LinearLayout r=row();
             Button learn=button("Learn",false,()->{try{sendFan(Protocol.LEARN,chosen,Integer.parseInt(carrier.getText().toString().trim()));}catch(NumberFormatException e){error("Enter a carrier between 30 and 60 kHz.");}});
             Button test=button("Test",false,()->sendFan(Protocol.SEND_IR,chosen,0));Button clear=button("Clear",false,()->new AlertDialog.Builder(this).setTitle("Clear "+Protocol.COMMANDS[chosen]+"?").setMessage("This removes the saved command from the controller.").setPositiveButton("Clear",(d,w)->sendFan(Protocol.CLEAR_LEARNED,chosen,0)).setNegativeButton("Cancel",null).show());
@@ -243,19 +259,30 @@ public class MainActivity extends Activity {
         refreshSavedFeelings();
     }
     private void refreshFan(BreezeService b,Protocol.Reading r){
-        Protocol.FanState f=b!=null&&b.freshFan()?b.fan:null;boolean available=f!=null&&!b.fanWritePending();boolean learning=f!=null&&f.learning!=255;
-        if(delayedPowerButton!=null){boolean running=b!=null&&b.delayedPowerTestActive();delayedPowerButton.setEnabled(!running);delayedPowerButton.setText(running?(BreezeService.delayedPowerSeconds>0?"Starting in "+BreezeService.delayedPowerSeconds+" seconds…":"Sending Power ×3…"):"Power ×3 after 5 seconds");}
-        if(delayedPowerStatus!=null)delayedPowerStatus.setText(BreezeService.delayedPowerTestStatus);
+        if(receiverLatest!=null){
+            Protocol.ReceiverInput input=b==null?null:b.receiverInput;
+            receiverLatest.setText(b==null||!b.ready?"Connect the controller to monitor infrared.":!b.receiverMonitorSupported?"Controller update required for receiver monitoring.":input==null||!input.hasInput()?"No infrared input received yet.":"Last received #"+input.counter+" · "+input.source()+" · "+input.label()+"\n"+input.details());
+            Protocol.ReceiverInput external=b==null?null:b.lastExternalReceiverInput,led=b==null?null:b.lastLedReceiverInput;
+            receiverExternal.setText(external==null?"External input · —":"External input · "+external.label()+"\n"+external.details());
+            receiverLed.setText(led==null?"During LED send · —":"During LED send · "+led.label()+"\n"+led.details());
+            String sent=b==null?"":b.fanCommandStatus;receiverSendStatus.setText(sent);receiverSendStatus.setVisibility(sent.isEmpty()?View.GONE:View.VISIBLE);
+        }
+        boolean irTesting=b!=null&&b.irReceiverTestActive();Protocol.FanState f=b!=null&&b.freshFan()?b.fan:null;boolean available=f!=null&&!b.fanWritePending()&&!irTesting;boolean learning=f!=null&&f.learning!=255;
+        if(irReceiverTestButton!=null)irReceiverTestButton.setText(irTesting?"LED receiver test running…":"Test LED → receiver");
+        if(irReceiverTestStatus!=null)irReceiverTestStatus.setText(b==null?"Connect the controller to test infrared output.":!b.irReceiverTestStatus.isEmpty()?b.irReceiverTestStatus:b.irReceiverTestSupported?"Ready to test the LED with the receiver.":"Controller update required for this test.");
+        for(Button control:fanUtilityButtons)control.setEnabled(available);
         if(fanStatus!=null)fanStatus.setText(f==null?"Waiting for IR-controller telemetry":(f.synced()?"Estimated speed "+f.speed+(f.busy()?" → "+f.target:""):"Fan speed unknown · sync with the physical fan")+(f.error==0?"":"\n"+Protocol.error(f.error)));
-        for(Button button:remoteButtons)button.setEnabled(available&&!learning);
+        boolean manualAvailable=f!=null&&!irTesting&&!learning;
+        for(Button button:remoteButtons)button.setEnabled(manualAvailable);
         for(Button button:targetButtons)button.setEnabled(available&&!learning&&f.synced()&&!f.busy());
         if(learningStatus!=null){String result=f==null?"Waiting for IR-controller telemetry":learning?"Point the Dreo remote at the ESP32 and press "+Protocol.COMMANDS[f.learning]+".":switch(f.learnState){case 2->"Saved "+(f.resultSlot<Protocol.COMMANDS.length?Protocol.COMMANDS[f.resultSlot]:"command")+" on controller";case 3->"Learning timed out. Previous command retained.";case 4->"Learning canceled.";case 5->"Capture/save failed. "+Protocol.error(f.error);default->"Choose a button to learn.";};learningStatus.setText(result+(f!=null&&f.error!=0?"\n"+Protocol.error(f.error):""));}
-        for(int i=0;i<learnButtons.size();i++){boolean learned=f!=null&&f.has(i);learnedLabels.get(i).setText(f==null?"Waiting for controller":learned?"Learned":"Not learned");learnButtons.get(i).setText(learned?"Relearn":"Learn");learnButtons.get(i).setEnabled(available);testButtons.get(i).setEnabled(available&&!learning&&learned);clearButtons.get(i).setEnabled(available&&!learning&&learned);}
+        for(int i=0;i<learnButtons.size();i++){boolean learned=f!=null&&f.has(i);learnedLabels.get(i).setText(f==null?"Waiting for controller":learned?"Learned":"Not learned");learnButtons.get(i).setText(learned?"Relearn":"Learn");learnButtons.get(i).setEnabled(available);testButtons.get(i).setEnabled(manualAvailable&&learned);clearButtons.get(i).setEnabled(available&&!learning&&learned);}
         if(testStatus!=null){boolean recording=r!=null&&r.active();testStatus.setText(recording?"Recording raw probe data"+(f!=null&&f.phase>0?" · "+Store.phaseName(f.phase):""):"Ready to record raw probe data");startProbeTest.setEnabled(available&&!recording&&!RecordingVoiceController.isStarting());onProbes.setEnabled(available&&recording&&f.phase>0);offProbes.setEnabled(available&&recording&&f.phase>0);stopProbeTest.setEnabled(available&&recording);}
     }
     private void searchPlace(String query){if(query.isEmpty())return;toast("Looking up "+query+"…");worker.execute(()->{try{List<Weather.Place> p=Weather.search(query);runOnUiThread(()->{if(isFinishing()||isDestroyed())return;if(p.isEmpty()){error("No matching location. Try the city name.");return;}new AlertDialog.Builder(this).setTitle("Choose weather location").setItems(p.stream().map(x->x.label).toArray(String[]::new),(d,w)->{Weather.Place place=p.get(w);Settings.prefs(this).edit().putString("query",query).putString("place",place.label).putString("latitude",""+place.lat).putString("longitude",""+place.lon).apply();build();}).show();});}catch(Exception e){runOnUiThread(()->error(e.getMessage()));}});}
     private void fetchWeather(Store.Session s){String lat=Settings.prefs(this).getString("latitude","");if(lat.isEmpty()){new AlertDialog.Builder(this).setTitle("Choose your weather location").setMessage("Search ZIP 53214 in Setup first.").setPositiveButton("Open Setup",(d,w)->{tab="Setup";build();}).show();return;}Weather.Place p=new Weather.Place();p.lat=Double.parseDouble(lat);p.lon=Double.parseDouble(Settings.prefs(this).getString("longitude","0"));p.label=Settings.prefs(this).getString("place","");toast("Fetching outdoor weather…");worker.execute(()->{try{int count=Weather.fetch(store,s,p);runOnUiThread(()->{toast("Added "+count+" hourly outdoor readings.");if(!isDestroyed())build();});}catch(Exception e){runOnUiThread(()->error("Weather unavailable: "+e.getMessage()));}});}
     @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();if(request==EXPORT_REQUEST||request==FEELING_EXPORT_REQUEST){try(java.io.OutputStream out=getContentResolver().openOutputStream(uri)){if(out==null)throw new java.io.IOException("Cannot open export destination");if(exportSession<0)throw new java.io.IOException("Choose a session to export again.");out.write((request==FEELING_EXPORT_REQUEST?store.feelingsCsv(exportSession):store.csv(exportSession)).getBytes(StandardCharsets.UTF_8));toast("CSV exported.");}catch(Exception e){error(e.getMessage());}}}
     private void toast(String message){Toast.makeText(this,message,Toast.LENGTH_LONG).show();}
+    private void manualFeedback(String message){if(manualFeedback!=null)manualFeedback.cancel();manualFeedback=Toast.makeText(this,message,Toast.LENGTH_SHORT);manualFeedback.show();}
     private void error(String message){if(!isFinishing()&&!isDestroyed())new AlertDialog.Builder(this).setTitle("Breeze").setMessage(message==null?"Check your entries.":message).setPositiveButton("OK",null).show();}
 }

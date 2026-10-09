@@ -4,6 +4,8 @@
 
 ## Wiring
 
+> October 9 status: the user-confirmed working transmitter is `D7 -> 220 Ω -> TSAL6200 anode`, with its cathode to GND and the VBUS/47 Ω/transistor branch disconnected. It operates the fan at about eight feet but can lose reception during oscillation. The transistor diagram below is the earlier design, not this working bypass; see [the current handoff](../TROUBLESHOOTING.md) before changing the transmitter.
+
 | Function | XIAO ESP32C6 label | GPIO |
 | --- | --- | --- |
 | Existing body thermistor divider | D0 | 0 |
