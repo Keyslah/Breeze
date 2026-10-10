@@ -1,10 +1,215 @@
 # Breeze IR transmitter troubleshooting handoff
 
+## Current handoff: Setup and Logic review — October 9, 2026
+
+Start with [Setup redesign and fan Logic investigation](docs/SETUP_REDESIGN_REVIEW.md).
+Firmware 1.2.14 is installed and startup-confirmed. The latest reported failure
+to turn Off is explained by room-gap HOLD taking precedence over the checked
+Cool-rule body shutoff: room about 72.6°F, Cool below 72°F, Warm at/above 73°F,
+body average about 75°F, target held at 4, and zero IR transmissions since boot.
+The user has requested a complete Setup-page review and proposed solutions,
+**without implementation**; no new precedence policy has been chosen.
+
+Firmware 1.2.13 restored full learned Symphony bursts. Version 1.2.14 enforces
+one second after the latest completed transmission before another automatic
+action, preserving the 300 ms idle wake repeat. Off/1–9/H support is present.
+The user reported manual presses roughly one second apart working; that does
+not establish reliability at faster rates or physical reception of every send.
+The sections below retain earlier observations and recovery history.
+
 Updated: October 9, 2026 (America/Chicago).
 Current software: manual-send changes and receiver diagnostics published with
-this handoff; the latest recorded physical firmware installation is **1.2.5**.
+this handoff; the latest recorded physical firmware installation is **1.2.10**.
 The original October 8 investigation used source baseline
 `6e707b33b8ba7213dd11a160f7c51bc46a24d6ac`.
+
+## Current status: October 9, firmware 1.2.10 installed; wireless updates verified
+
+**The NVS and USB logging recovery is complete.** Firmware 1.2.10 was installed
+over Wi-Fi, then passed another complete wireless update to the same build with
+**USB connected and its serial reader closed**, taking 53.2 seconds. Fresh BLE
+after reboot verified 1.2.10, rollback pending false and all six learned slots
+(`0x03f`). A final OTA re-entry after the backup/reset reached READY with ACK 0;
+normal cancellation then returned it to IDLE and stopped the temporary network.
+No IR commands were sent, and recording remains stopped.
+
+The post-repair flash comparison verified every metadata field and active pulse
+of all six learned codes through version-1 → version-2 migration. All 45 committed
+keys remain: 35 other keys are byte-identical and four radio configuration /
+calibration keys changed during radio operation. NVS now has **281 of 504 usable
+entries available and zero orphaned blob entries**. The full physical first-press
+IR symptom and unavailable D2 reading remain separate, unresolved observations.
+
+### Recovery findings and earlier 1.2.9 validation
+
+The controller is now connected and identified on **COM3**. USB serial reported
+`phy_init: store calibration failed (0x1105)`, which is
+`ESP_ERR_NVS_NOT_ENOUGH_SPACE`. The saved flash snapshot independently confirms
+that all **504 usable NVS entries were occupied before repair**; the fifth page is the required
+126-entry spare, not available application capacity. This establishes the
+storage failure behind the radio-startup investigation, superseding the earlier
+unknown-cause and USB-unavailable notes.
+
+Initial recovery installed and hash-verified firmware **1.2.9** by an application-only USB
+write to the existing valid slot at `0x10000`. Its first boot logged
+`migrated=6 available NVS entries=280 reserve=252` and learned mask `0x03f`,
+with no calibration error `0x1105` in the captured boot log. Fresh BLE confirmed
+1.2.9, schema 2, the fan-history capability and rollback pending false. A new
+correlated OTA command reached **PREPARING → READY, error 0**, with sequence 1
+acknowledged successfully; Windows detected its temporary update network.
+A complete Wi-Fi upload of 1.2.9 subsequently passed **while a USB serial reader
+was actively draining output**: image/SHA-256 validation, reboot and startup
+health confirmation all succeeded. The next boot logged `migrated=0`, 281
+available entries and the same six learned slots; subsequent BLE verification
+passed with learned mask `0x03f`. The NVS repair therefore survived a real
+wireless update and reboot.
+
+The first transfer with USB attached but its serial reader closed timed out
+after 150 seconds at 28.7%. The installed Arduino `HWCDC.write` can wait about
+two seconds on a full output buffer; the new once-per-second sensor diagnostic
+was repeatedly delaying the main loop. Opening a read-only serial drainer
+reduced measured OTA startup from about eight seconds to 156 ms and allowed
+the full transfer above. Firmware **1.2.10 fixes that recurring log output**:
+format each sensor diagnostic into a bounded buffer and emit it only when the
+entire line fits the available output space. Full/partial/exact-fit buffer and
+sustained sampling tests pass; one-second measurements and OTA code are
+unchanged. The completed 1.2.10 wireless update with the serial reader closed
+verifies that the recurring diagnostic no longer causes the observed timeout.
+
+Before the repair, the 20 KiB NVS area contained six valid version-1 learned codes, each stored in a
+fixed 1,576-byte structure despite using only 191 or 215 raw pulse timings.
+Those six blobs occupied **314 entries**, plus one for the verified flag.
+Radio calibration also had **64 orphaned entries** from an incomplete replacement;
+the prior complete calibration remains valid. The learned-code checksums and
+every active pulse in all six slots passed inspection. Neither `logic-profile`
+nor `fan-estimate` is present in this controller snapshot; the phone's saved
+settings are separate. The profile-persistence error 24 is consistent with the
+confirmed exhausted NVS, not evidence that the learned commands are damaged.
+
+The installed repair stores the same learned metadata and active pulses in a
+compact version-2 format: 466 bytes for the two 215-pulse codes and 418 bytes for
+the four 191-pulse codes. Boot migration runs before BLE initialization, accepts
+validated legacy records, and replaces/readbacks one existing key at a time
+without clearing it first. Normal learned-code writes must leave **252 available
+entries** for radio work, in addition to NVS's internal spare page and the new
+blob's temporary write cost. The migration exception applies only to validated,
+space-shrinking replacements. Partition sizes, OTA protocol and rollback
+confirmation are unchanged.
+
+Preflight tests use the actual six backed-up codes and passed exact metadata /
+pulse preservation, migration starting with only 64 available entries, an
+interrupted migration followed by reboot, idempotent subsequent boots, malformed
+record rejection, failed replacement preservation and the reserve guard.
+Existing IR checks and all 432 first-send cases also passed. Those host tests
+are separate from the live migration and OTA-startup evidence above. See
+[validation details](docs/VALIDATION.md) for the flash layout and evidence.
+
+Recording data is separate from NVS: the controller uses 512 KiB LittleFS,
+while downloaded history lives on the phone. The last confirmed archive base,
+total and phone cursor were all **40,974**, with recording stopped. Preserved
+phone data includes 7 sessions and 40,974 samples. No recording format or data
+partition is being resized for this repair.
+
+Evidence: `firmware/out-fan-history-20261009/verification/usb-initial-diagnostics.txt`
+and the read-only, value-redacted `verification/nvs-summary.py` in that same
+build directory; the inspected snapshot is
+`backups/2026-10-09-ota-nvs-recovery/boot-partition-nvs-before-repair.bin`.
+Deployment evidence is under `firmware/out-nvs-recovery-20261009`:
+`preflight.json`, `usb-install.log`, `usb-first-boot.txt`, the first failed
+`wireless-roundtrip.log`, and the successful `wireless-drained-roundtrip-retry.log`
+with `wireless-drained-serial.txt`. Final 1.2.10 evidence is under
+`firmware/out-nvs-recovery-final-20261009`: `wireless-install.log`,
+`wireless-unread-usb-roundtrip.log`, `after-unread-usb-verify.txt`,
+`nvs-preservation.json`, `final-ota-reentry.txt` and `final-ota-idle.txt`.
+The earlier successful OTA-startup trace is
+`firmware/out-fan-history-20261009/verification/ota-correlated-1791575881778848200.json`.
+The available backups must not be described as a complete 4 MiB flash image.
+Keep the verified recovery files: firmware **1.2.8 and earlier cannot read
+compact version-2 learned codes**. A downgrade requires a planned USB recovery
+with the verified compatible backup, not blindly flashing the older firmware.
+
+### Earlier October 9 app/IR observations
+
+**Latest user direction: set aside the fan-not-working investigation.** The user
+attributed the recent complete loss of response to the sensor having moved /
+positioning and asked to return to the other problems. This is not a confirmed
+firmware defect, and no further hardware diagnostics are requested. The remaining
+scope at that stage was the original first-press issue, one-plot graph work, and
+the then-blocked firmware update needed for recorded fan settings. The firmware
+update and recovery are now complete as recorded above.
+
+Before that clarification, the user reported **no physical fan response** to the
+captured taps despite successful software acknowledgements. Preserve that trace
+as evidence of the software path, not as proof of the cause of the positioning
+problem or a reason to continue the set-aside investigation.
+
+- The bounded local command trace captured six real user taps, including the
+  first tap after returning to Fan. Each reached the click handler, generated a
+  manual request, received a successful ACK, and advanced the controller's
+  `sendCounter` from 10 through 16. Later telemetry reached 19. See
+  [captured touch/request/ACK trace](app/out-fan-history-20261009/verification/phone-first-touch-trace.txt).
+  These counters prove execution of the firmware send path, **not optical
+  emission or acceptance by the fan**.
+- The first-touch UI checks pass. The host test runs the actual firmware command
+  and fan logic through **432 cases** covering first sends, reconnects, duplicate
+  ACKs, profile commits, and decoded/raw paths. Its hardware spies cannot prove
+  a physical IR waveform or fan response. Live Android/BLE inspection also found
+  the controller connected on **1.2.7**, a fresh packet age of **506 ms**, and no
+  pending command.
+- A separate reconnect profile upload reported `fanError=24` and
+  `commandError=24` while the send counter remained unchanged and no manual
+  request was traced. The automatic profile commit can return this error when
+  NVS writing, committing, or readback verification fails. The underlying cause
+  was unresolved at that stage; the USB/snapshot evidence above now establishes
+  exhausted NVS and intact learned commands. The profile persistence code
+  is unchanged from the actual 1.2.7 build, and this error does not itself block
+  the next manual send after the upload finishes failing.
+- The **1.2.8** controller image is built at
+  [BreezeController.ino.bin](firmware/out-fan-history-20261009/BreezeController.ino.bin).
+  OTA returned **AP_START error 9 twice**, including after cancel/retry;
+  **1.2.8 was not flashed**. At that stage, the physically verified version remained
+  1.2.7. After the user restarted the ESP, a fresh uptime of 119 seconds
+  confirmed the restart; another OTA attempt still returned AP_START error 9,
+  and Windows detected zero Breeze update networks. Restarting did not resolve it.
+- Fan setting now overlays the **one existing graph plot**, with no added
+  plot or height. The corrected APK at `app/out-fan-overlay-20261009/outputs/apk/debug/app-debug.apk`
+  is installed and hash-verified on Pixel 8 Pro. Its graph rendering checks
+  passed. **D2 investigation is set aside at the user's request.**
+
+Preserve the learned slots, NVS, phone history, and controller records. Do not
+guess a duplicate-send workaround or reset NVS. Firmware 1.2.10 passed the
+wireless round trip with its serial reader closed. The earlier first-press symptom is not proved
+fixed by the software-path tests. The sections below preserve the earlier
+investigation and do not override the user's latest direction.
+
+## October 9: first ineffective press after returning to Breeze
+
+The user reports that every return to Breeze, including a quick switch from
+another app, needs two Power/Speed taps before the fan responds. Two Speed+
+taps advanced the displayed estimate from 1 to 3 while the physical fan only
+reached 2. This was observed on firmware 1.2.5; the subsequent 1.2.7 installation
+does not establish a fix for that symptom.
+
+A quick foreground return preserves BLE within the 120-second grace period;
+it sends no fan command or speed correction. Android displays the controller's
+estimate, and the 1.2.5 firmware increments it after calling `transmit()`.
+That narrows the investigation to controller transmission/fan acceptance, but
+still does not prove optical emission or identify the cause. Do not add an
+unconditional second Power/Speed send: both transmissions could take effect.
+
+Installed diagnostic APK: `app/out-fan-resume-diagnostic/outputs/apk/debug/app-debug.apk`.
+`BreezeBLE` logcat now records manual request sequence/slot/previous send count
+and acknowledgement. `dumpsys activity service com.aaron.breeze/.BreezeService`
+also reports current speed, synchronization, send counter, last slot and readiness.
+The next useful evidence is one failed first press after a foreground return,
+paired with the physical fan's beep/display response and these diagnostics.
+
+At this earlier stage, firmware 1.2.7 was installed with rollback cleared and
+six learned slots intact. All phone records were saved before that update.
+D2 firmware support was installed, but the live D2 reading remained unavailable;
+the physical input cause has not been established. See `docs/VALIDATION.md` for
+artifact hashes, preserved data and exact live observations. Older findings below
+describe their original firmware versions.
 
 ## Current result: 220 ohms works, oscillation coverage remains open
 
@@ -217,19 +422,19 @@ writers for current layouts rather than applying the historical type-7 layout.
 
 The bundled IR library is IRremoteESP8266 2.9.0. The documented controller
 toolchain is Arduino-ESP32 3.3.12. **Source and build-script version defaults
-still say 1.2.2.** The latest 1.2.5 build explicitly overrides the patch version;
+still say 1.2.2.** The verified 1.2.10 build explicitly overrides the patch version;
 the number cannot be inferred from the source defaults alone. To reproduce that
 version, build explicitly and pass the resulting image to the existing updater:
 
 ```powershell
-.\firmware\build-ota.ps1 -BuildPath .\firmware\out-immediate-ir -VersionPatch 5
-.\firmware\wireless-update.ps1 -FirmwarePath .\firmware\out-immediate-ir\BreezeController.ino.bin
+.\firmware\build-ota.ps1 -BuildPath .\firmware\out-nvs-recovery-final-20261009 -VersionPatch 10
+.\firmware\wireless-update.ps1 -FirmwarePath .\firmware\out-nvs-recovery-final-20261009\BreezeController.ino.bin
 ```
 
-The upload command changes the controller; it was not run while preparing this
-GitHub update. The recorded prior OTA verification reported 1.2.5, rollback
-pending false, and learned slots `0x03f` retained. Read live telemetry before
-claiming a future controller's installed version.
+The upload command changes the controller. The October 9 recovery above verified
+1.2.10 after a complete wireless update, rollback pending false and learned slots
+`0x03f` retained. Read live telemetry before claiming a future controller's
+installed version; preserve the backup requirement before any legacy downgrade.
 
 For an agent changing Android code, a fresh output directory avoids the older
 Windows build-output locks:

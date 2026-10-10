@@ -13,6 +13,7 @@
 #include "Pins.h"
 #include "FanRemote.h"
 #include "OtaUpdate.h"
+#include "TelemetryCadence.h"
 
 // Confirm supply voltage/resistor with a meter during calibration.
 constexpr float DIVIDER_SUPPLY_MV=3300, SERIES_OHMS=10000, PROBE_OFFSET_C=0;
@@ -46,13 +47,16 @@ volatile uint32_t connectionGeneration=0;
 bool shtReady=false, mounted=false, storageOK=false, active=false;
 float probe=NAN,room=NAN,rh=NAN;
 float secondProbe=NAN;
+float thirdProbe=NAN;
 uint8_t testStage=0; // User markers only: 1 baseline, 2 lying on probes, 3 off probes.
 FanRemote fan;
 OtaUpdate ota;
+BreezeTelemetryCadence telemetryCadence;
 volatile bool fanDisconnected=false;
 uint8_t errorCode=0,commandError=0;
 uint16_t ack=0,sequence=0;
-uint32_t lastSample=0,lastRoomSample=0,lastLog=0,lastNotify=0,lastStream=0;
+uint32_t lastSample=0,lastRoomSample=0,lastLog=0,lastStream=0;
+uint32_t lastLogicSample=0;
 uint64_t epochBase=0,clockAt=0;
 uint32_t baseRecord=0,totalRecord=0,streamRecord=0;
 uint32_t archiveId=0;
@@ -70,12 +74,26 @@ void put32(uint8_t* b,uint32_t v){put16(b,v);put16(b+2,v>>16);}
 uint8_t crc8(const uint8_t* b,int len){uint8_t crc=0;for(int i=0;i<len;i++){crc^=b[i];for(int bit=0;bit<8;bit++)crc=(crc&128)?(crc<<1)^7:crc<<1;}return crc;}
 uint32_t nowEpoch(){return epochBase?epochBase+(esp_timer_get_time()/1000000-clockAt):0;}
 void notifyBytes(uint8_t* b){tx->setValue(b,20);if(connected)tx->notify();}
-uint8_t flags(){return (active?1:0)|(isfinite(probe)?8:0)|(isfinite(room)?16:0)|(isfinite(rh)?32:0);}
-void capabilities(){uint8_t b[20]={4};b[4]=7;b[5]=FIRMWARE_VERSION_MAJOR;b[6]=FIRMWARE_VERSION_MINOR;b[7]=FIRMWARE_VERSION_PATCH;b[8]=CAPABILITY_OTA|2|4;b[9]=ota.pendingVerification()?1:0;notifyBytes(b);}
+uint8_t flags(){return (active?1:0)|(validBody(thirdProbe)?2:0)|(isfinite(probe)?8:0)|(isfinite(room)?16:0)|(isfinite(rh)?32:0);}
+void capabilities(){uint8_t b[20]={4};b[4]=7;b[5]=FIRMWARE_VERSION_MAJOR;b[6]=FIRMWARE_VERSION_MINOR;b[7]=FIRMWARE_VERSION_PATCH;b[8]=CAPABILITY_OTA|2|4|8|16|32|64;b[9]=ota.pendingVerification()?1:0;b[10]=2;b[11]=BreezeTelemetryCadence::FULL_PERIOD_MS/1000;notifyBytes(b);}
 void telemetry(){
   // Confirm the button press before sending supplementary controller status.
-  uint8_t b[20]={1};b[1]=flags()|(active&&storageOK?64:0)|(storageOK?128:0);put16(b+2,++sequence);put16(b+4,isfinite(probe)?lroundf(probe*100):0);put16(b+6,isfinite(room)?lroundf(room*100):0);put16(b+8,isfinite(rh)?lroundf(rh*100):0);put32(b+12,millis()/1000);put16(b+16,ack);b[18]=errorCode;b[19]=commandError;notifyBytes(b);
-  uint8_t extra[20];fan.statusPacket(extra,secondProbe,testStage);notifyBytes(extra);capabilities();fan.receiverTestPacket(extra,millis());notifyBytes(extra);fan.receiverInputPacket(extra);notifyBytes(extra);
+  uint8_t b[20]={1};b[1]=flags()|(active&&storageOK?64:0)|(storageOK?128:0);put16(b+2,++sequence);put16(b+4,isfinite(probe)?lroundf(probe*100):0);put16(b+6,isfinite(room)?lroundf(room*100):0);put16(b+8,isfinite(rh)?lroundf(rh*100):0);put16(b+10,validBody(thirdProbe)?lroundf(thirdProbe*100):0);put32(b+12,millis()/1000);put16(b+16,ack);b[18]=errorCode;b[19]=commandError;notifyBytes(b);
+  uint32_t now=millis();uint8_t fanState[20],logicState[20],receiverTest[20],receiverInput[20];
+  fan.statusPacket(fanState,secondProbe,testStage);notifyBytes(fanState);fan.logicStatusPacket(logicState,now);notifyBytes(logicState);capabilities();fan.receiverTestPacket(receiverTest,now);notifyBytes(receiverTest);fan.receiverInputPacket(receiverInput);notifyBytes(receiverInput);
+  telemetryCadence.fullSent(millis(),connectionGeneration,fanState,logicState,receiverTest,receiverInput);
+}
+void serviceTelemetry(uint32_t now){
+  if(!connected)return;
+  if(telemetryCadence.fullDue(now,connectionGeneration)){telemetry();return;}
+  if(!telemetryCadence.pollDue(now))return;
+  uint8_t fanState[20],logicState[20],receiverTest[20],receiverInput[20];
+  fan.statusPacket(fanState,secondProbe,testStage);fan.logicStatusPacket(logicState,now);fan.receiverTestPacket(receiverTest,now);fan.receiverInputPacket(receiverInput);
+  uint8_t changed=telemetryCadence.changed(now,fanState,logicState,receiverTest,receiverInput);
+  if(changed&BreezeTelemetryCadence::FAN)notifyBytes(fanState);
+  if(changed&BreezeTelemetryCadence::LOGIC)notifyBytes(logicState);
+  if(changed&BreezeTelemetryCadence::RECEIVER_TEST)notifyBytes(receiverTest);
+  if(changed&BreezeTelemetryCadence::RECEIVER_INPUT)notifyBytes(receiverInput);
 }
 void metadata(){uint8_t b[20]={3};b[1]=active;put32(b+2,baseRecord);put32(b+6,totalRecord);put32(b+10,mounted?LittleFS.totalBytes()-LittleFS.usedBytes():0);b[14]=storageOK;put32(b+15,archiveId);notifyBytes(b);}
 String pathFor(uint32_t n){char p[32];snprintf(p,sizeof(p),"/log_%010lu.bin",(unsigned long)n);return String(p);}
@@ -91,10 +109,15 @@ void openStorage(){
 void appendRecord(uint8_t event=0,bool freshRoom=true){
   if(!storageOK)return;
   if(LittleFS.totalBytes()-LittleFS.usedBytes()<8192){storageOK=false;active=false;errorCode=6;return;}
-  // Type 6 adds D1 while retaining 20-byte records and legacy type 2 reads.
-  uint8_t b[20]={6};b[1]=(flags()& (freshRoom?255:~(16|32)))|event|(isfinite(secondProbe)?2:0)|(bodySource(probe,secondProbe)==2?4:0);put32(b+2,totalRecord);put32(b+6,nowEpoch());put16(b+10,isfinite(probe)?lroundf(probe*100):0);put16(b+12,isfinite(room)?lroundf(room*100):0);put16(b+14,isfinite(rh)?lroundf(rh*100):0);put16(b+16,isfinite(secondProbe)?lroundf(secondProbe*100):0);b[18]=errorCode|(testStage<<6);
-  b[19]=crc8(b,19);if(logFile.write(b,20)!=20){storageOK=false;active=false;errorCode=6;return;}logFile.flush();totalRecord++;
-  if(connected&&synced&&!streaming)notifyBytes(b);
+  // Keep legacy D0/D1 records readable, then associate a contiguous D2 record.
+  uint8_t pair[60]={};uint8_t* b=pair;uint8_t* third=pair+20;uint8_t* setting=pair+40;uint32_t parentIndex=totalRecord,epoch=nowEpoch();
+  b[0]=6;b[1]=(flags()&~2& (freshRoom?255:~(16|32)))|event|(isfinite(secondProbe)?2:0)|(bodySource(probe,secondProbe)==2?4:0);put32(b+2,parentIndex);put32(b+6,epoch);put16(b+10,isfinite(probe)?lroundf(probe*100):0);put16(b+12,isfinite(room)?lroundf(room*100):0);put16(b+14,isfinite(rh)?lroundf(rh*100):0);put16(b+16,isfinite(secondProbe)?lroundf(secondProbe*100):0);b[18]=errorCode|(testStage<<6);b[19]=crc8(b,19);
+  third[0]=10;third[1]=validBody(thirdProbe)?8:0;put32(third+2,parentIndex+1);put32(third+6,epoch);put16(third+10,validBody(thirdProbe)?lroundf(thirdProbe*100):0);put32(third+12,parentIndex);third[19]=crc8(third,19);
+  int8_t currentSetting=fan.recordedSetting();bool knownSetting=currentSetting>=0&&currentSetting<=10;
+  setting[0]=11;setting[1]=knownSetting?1:0;put32(setting+2,parentIndex+2);put32(setting+6,epoch);setting[10]=knownSetting?currentSetting:0;put32(setting+12,parentIndex);setting[19]=crc8(setting,19);
+  size_t written=logFile.write(pair,sizeof(pair));logFile.flush();totalRecord+=written/20;
+  if(written!=sizeof(pair)){storageOK=false;active=false;errorCode=6;return;}
+  if(connected&&synced&&!streaming){notifyBytes(b);notifyBytes(third);notifyBytes(setting);}
 }
 void readFanSensor();
 void readBodySensor();
@@ -182,16 +205,25 @@ void readFanSensor(){
 void readBodySensor(){
   uint32_t sum=0;for(int i=0;i<16;i++)sum+=analogReadMilliVolts(PROBE_PIN);probe=thermistor(sum/16.0f,DIVIDER_SUPPLY_MV,SERIES_OHMS)+PROBE_OFFSET_C;
   sum=0;for(int i=0;i<16;i++)sum+=analogReadMilliVolts(SECOND_PROBE_PIN);secondProbe=thermistor(sum/16.0f,DIVIDER_SUPPLY_MV,SERIES_OHMS)+SECOND_PROBE_OFFSET_C;
-  bool usable=isfinite(warmestBody(probe,secondProbe));
+  pinMode(THIRD_PROBE_PIN,INPUT);sum=0;for(int i=0;i<16;i++)sum+=analogReadMilliVolts(THIRD_PROBE_PIN);thirdProbe=thermistor(sum/16.0f,DIVIDER_SUPPLY_MV,SERIES_OHMS);
+  bool usable=isfinite(warmestBody(probe,secondProbe,thirdProbe));
   if(!usable){if(errorCode==0)errorCode=3;}else if(errorCode==3)errorCode=0;
-  Serial.printf("[SENSORS] D0=%.2fC D1=%.2fC room=%.2fC RH=%.1f warmerProbe=%u%s\n",probe,secondProbe,room,rh,bodySource(probe,secondProbe),usable?"":" NO USABLE BODY PROBE");
+  char message[160];
+  int length=snprintf(message,sizeof(message),"[SENSORS] D0=%.2fC D1=%.2fC D2=%.2fC room=%.2fC RH=%.1f warmerProbe=%u%s\n",probe,secondProbe,thirdProbe,room,rh,unsigned(bodySource(probe,secondProbe,thirdProbe)),usable?"":" NO USABLE BODY PROBE");
+  // A connected USB host may stop reading. Drop this diagnostic instead of waiting for TX space.
+  if(length>0&&size_t(length)<sizeof(message)&&Serial.availableForWrite()>=length)Serial.write(reinterpret_cast<const uint8_t*>(message),size_t(length));
 }
 void sampleSensors(uint32_t now){
   bool fanDue=now-lastRoomSample>=FAN_SAMPLE_MS;
   if(fanDue){lastRoomSample=now;readFanSensor();fanSamplePending=true;}
   if(now-lastSample>=BODY_SAMPLE_MS){lastSample=now;readBodySensor();if(active){lastLog=now;appendRecord(0,fanSamplePending);}fanSamplePending=false;}
 }
+void serviceLogicSensors(uint32_t now){
+  if(uint32_t(now-lastLogicSample)<1000)return;lastLogicSample=now;
+  readBodySensor();
+}
 void setup(){
+  pinMode(THIRD_PROBE_PIN,INPUT);analogSetPinAttenuation(THIRD_PROBE_PIN,ADC_11db);
   Serial.begin(115200);pinMode(OTA_BUTTON_PIN,INPUT_PULLUP);analogReadResolution(12);analogSetPinAttenuation(PROBE_PIN,ADC_11db);analogSetPinAttenuation(SECOND_PROBE_PIN,ADC_11db);
   prefs.begin("breeze",false);archiveId=prefs.getUInt("archive",0);if(!archiveId){archiveId=esp_random();if(!archiveId)archiveId=1;prefs.putUInt("archive",archiveId);}
   Wire.begin(ROOM_SDA_PIN,ROOM_SCL_PIN);Wire.setTimeOut(100);shtReady=sht.begin();if(shtReady){sht.setPrecision(SHT4X_HIGH_PRECISION);sht.setHeater(SHT4X_NO_HEATER);}openStorage();commands=xQueueCreate(12,sizeof(Command));fan.begin();
@@ -202,8 +234,8 @@ void loop(){
   if(fanDisconnected){fanDisconnected=false;fan.disconnected();}
   if(restartAdvertising){restartAdvertising=false;BLEDevice::startAdvertising();}
   Command command;while(xQueueReceive(commands,&command,0)==pdTRUE)if(connected&&command.connectionGeneration==connectionGeneration)process(command.b,command.connectionGeneration);
-  uint32_t now=millis();serviceComputerOtaTrigger(now);sampleSensors(now);fan.tick(probe,secondProbe,room,millis());
-  if(connected&&now-lastNotify>=1000){lastNotify=now;telemetry();}
+  uint32_t now=millis();serviceComputerOtaTrigger(now);serviceLogicSensors(millis());fan.tick(probe,secondProbe,room,millis(),thirdProbe);sampleSensors(millis());
+  serviceTelemetry(millis());
   if(streaming&&connected&&now-lastStream>=30){lastStream=now;if(streamRecord<totalRecord){File read=LittleFS.open(logPath,FILE_READ);uint8_t b[20];if(read&&streamRecord>=baseRecord&&read.seek((streamRecord-baseRecord)*20)&&read.read(b,20)==20){notifyBytes(b);streamRecord++;}else{streaming=false;commandError=6;}read.close();}else{streaming=false;synced=true;metadata();}}
   ota.tick();
   delay(5);

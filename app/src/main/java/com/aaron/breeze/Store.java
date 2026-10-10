@@ -13,7 +13,7 @@ public class Store extends SQLiteOpenHelper {
     public static final String FEELINGS_CHANGED="com.aaron.breeze.FEELINGS_CHANGED";
     private final Context context;
     public Store(Context c) { this(c,"breeze.db"); }
-    public Store(Context c,String name) { super(c,name,null,4);context=c.getApplicationContext()==null?c:c.getApplicationContext(); }
+    public Store(Context c,String name) { super(c,name,null,6);context=c.getApplicationContext()==null?c:c.getApplicationContext(); }
     @Override public void onConfigure(SQLiteDatabase db){super.onConfigure(db);db.execSQL("PRAGMA synchronous=FULL");}
     @Override public void onCreate(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE sessions (id INTEGER PRIMARY KEY, start INTEGER NOT NULL, end INTEGER, name TEXT NOT NULL, config TEXT NOT NULL, device TEXT, first_record INTEGER)");
@@ -23,7 +23,16 @@ public class Store extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE cursors (device TEXT PRIMARY KEY,next_record INTEGER NOT NULL)");
         d.execSQL("ALTER TABLE samples ADD COLUMN second_probe REAL");
         d.execSQL("ALTER TABLE samples ADD COLUMN phase INTEGER NOT NULL DEFAULT 0");
+        d.execSQL("ALTER TABLE samples ADD COLUMN third_probe REAL");
+        d.execSQL("ALTER TABLE samples ADD COLUMN third_probe_record INTEGER");
+        d.execSQL("CREATE INDEX sample_third_probe_record ON samples(device,third_probe_record)");
+        addFanSettingColumns(d);
         createFeelings(d);
+    }
+    private static void addFanSettingColumns(SQLiteDatabase d){
+        d.execSQL("ALTER TABLE samples ADD COLUMN fan_setting INTEGER");
+        d.execSQL("ALTER TABLE samples ADD COLUMN fan_setting_record INTEGER");
+        d.execSQL("CREATE INDEX sample_fan_setting_record ON samples(device,fan_setting_record)");
     }
     private static void createFeelings(SQLiteDatabase d){
         d.execSQL("CREATE TABLE feelings (id INTEGER PRIMARY KEY, session INTEGER REFERENCES sessions(id), time INTEGER NOT NULL CHECK(time>0), kind TEXT NOT NULL CHECK(kind IN ('Hot','Cold')), intensity INTEGER NOT NULL CHECK(intensity BETWEEN 1 AND 10), state TEXT NOT NULL CHECK(state IN ('WARM','COLD')), signed_value INTEGER NOT NULL CHECK(signed_value=CASE state WHEN 'WARM' THEN intensity ELSE -intensity END), local_timestamp TEXT NOT NULL, zone_id TEXT NOT NULL, local_time_derived INTEGER NOT NULL DEFAULT 0, event_token TEXT UNIQUE, controller_device TEXT, anchor_record INTEGER, CHECK(kind=CASE state WHEN 'WARM' THEN 'Hot' ELSE 'Cold' END))");
@@ -35,7 +44,7 @@ public class Store extends SQLiteOpenHelper {
         d.execSQL("CREATE INDEX feeling_time ON feelings(session,time,id)");
     }
     @Override public void onUpgrade(SQLiteDatabase d,int old,int next) {
-        if(old<1||next>4||old>=next)throw new IllegalStateException("Migration required");
+        if(old<1||next>6||old>=next)throw new IllegalStateException("Migration required");
         if(old<2&&next>=2){d.execSQL("ALTER TABLE samples ADD COLUMN second_probe REAL");d.execSQL("ALTER TABLE samples ADD COLUMN phase INTEGER NOT NULL DEFAULT 0");}
         if(old<3&&next>=3)createLegacyFeelings(d);
         if(old<4&&next>=4){
@@ -55,11 +64,13 @@ public class Store extends SQLiteOpenHelper {
             }
             d.execSQL("DROP TABLE feelings_v3");
         }
+        if(old<5&&next>=5){d.execSQL("ALTER TABLE samples ADD COLUMN third_probe REAL");d.execSQL("ALTER TABLE samples ADD COLUMN third_probe_record INTEGER");d.execSQL("CREATE INDEX sample_third_probe_record ON samples(device,third_probe_record)");}
+        if(old<6&&next>=6)addFanSettingColumns(d);
     }
     public long start(String config) { ContentValues v=new ContentValues(); v.put("start",System.currentTimeMillis()); v.put("name","Sleep session"); v.put("config",config); return getWritableDatabase().insertOrThrow("sessions",null,v); }
     public void finish(long id) { ContentValues v=new ContentValues();v.put("end",System.currentTimeMillis());getWritableDatabase().update("sessions",v,"id=?",new String[]{""+id}); }
     public void sample(long session,Protocol.Reading r) {
-        ContentValues v=new ContentValues();v.put("session",session);v.put("time",r.time); put(v,"probe",r.probe);put(v,"room",r.room);put(v,"humidity",r.humidity);v.put("speed",0);v.put("mode",0);v.put("uptime",r.uptime);v.put("fault",r.error);getWritableDatabase().insertOrThrow("samples",null,v);
+        ContentValues v=new ContentValues();v.put("session",session);v.put("time",r.time); put(v,"probe",r.probe);put(v,"room",r.room);put(v,"humidity",r.humidity);put(v,"third_probe",r.thirdProbe);v.put("speed",0);v.put("mode",0);v.put("uptime",r.uptime);v.put("fault",r.error);getWritableDatabase().insertOrThrow("samples",null,v);
     }
     private void put(ContentValues v,String key,double value) { if(Double.isFinite(value))v.put(key,value);else v.putNull(key); }
     public long cursor(String device){try(Cursor c=getReadableDatabase().rawQuery("SELECT next_record FROM cursors WHERE device=?",new String[]{device})){return c.moveToFirst()?c.getLong(0):0;}}
@@ -72,10 +83,30 @@ public class Store extends SQLiteOpenHelper {
         if(index!=cursor(device))return -1;
         int flags=data[1]&255;SQLiteDatabase db=getWritableDatabase();db.beginTransaction();long session=-1;boolean feelingsChanged=false;
         try {
-            try(Cursor c=db.rawQuery("SELECT id FROM sessions WHERE device=? ORDER BY first_record DESC LIMIT 1",new String[]{device})){if(c.moveToFirst())session=c.getLong(0);}
-            if((flags&64)!=0 || session<0){ContentValues s=new ContentValues();s.put("start",time);s.put("name","Controller session");s.put("config","Recorded on XIAO ESP32C6");s.put("device",device);s.put("first_record",index);session=db.insertOrThrow("sessions",null,s);}
-            ContentValues v=new ContentValues();v.put("session",session);v.put("device",device);v.put("record",index);v.put("time",time);put(v,"probe",(flags&8)!=0?b.getShort(10)/100.0:Double.NaN);put(v,"room",(flags&16)!=0?b.getShort(12)/100.0:Double.NaN);put(v,"humidity",(flags&32)!=0?(b.getShort(14)&65535)/100.0:Double.NaN);v.put("speed",data[0]==2?Math.min(3,data[16]&255):0);v.put("mode",data[0]==2&&(flags&2)!=0?1:0);v.put("fault",data[0]==6?data[18]&63:data[18]&255);put(v,"second_probe",data[0]==6&&(flags&2)!=0?b.getShort(16)/100.0:Double.NaN);v.put("phase",data[0]==6?(data[18]&255)>>6:0);db.insertOrThrow("samples",null,v);
-            if((flags&128)!=0){ContentValues s=new ContentValues();s.put("end",time);db.update("sessions",s,"id=?",new String[]{""+session});}
+            if(data[0]==11){
+                long parent=Integer.toUnsignedLong(b.getInt(12)),sample;
+                try(Cursor c=db.rawQuery("SELECT id,session FROM samples WHERE device=? AND record=? AND time=? AND third_probe_record=?",new String[]{device,""+parent,""+time,""+(index-1)})){
+                    if(!c.moveToFirst())throw new IllegalArgumentException("Fan setting record is missing its matching temperature records; not acknowledged.");
+                    sample=c.getLong(0);session=c.getLong(1);
+                }
+                ContentValues v=new ContentValues();if((flags&1)!=0)v.put("fan_setting",data[10]&255);else v.putNull("fan_setting");v.put("fan_setting_record",index);
+                if(db.update("samples",v,"id=?",new String[]{""+sample})!=1)throw new IllegalStateException("Fan setting sample changed before it was saved.");
+            }else if(data[0]==10){
+                long parent=Integer.toUnsignedLong(b.getInt(12));
+                if(index==0||parent!=index-1)throw new IllegalArgumentException("Third probe record has an invalid parent; not acknowledged.");
+                long sample;
+                try(Cursor c=db.rawQuery("SELECT id,session FROM samples WHERE device=? AND record=? AND time=?",new String[]{device,""+parent,""+time})){
+                    if(!c.moveToFirst())throw new IllegalArgumentException("Third probe record is missing its matching temperature sample; not acknowledged.");
+                    sample=c.getLong(0);session=c.getLong(1);
+                }
+                ContentValues v=new ContentValues();put(v,"third_probe",(flags&8)!=0?b.getShort(10)/100.0:Double.NaN);v.put("third_probe_record",index);
+                if(db.update("samples",v,"id=?",new String[]{""+sample})!=1)throw new IllegalStateException("Third probe sample changed before it was saved.");
+            }else{
+                try(Cursor c=db.rawQuery("SELECT id FROM sessions WHERE device=? ORDER BY first_record DESC LIMIT 1",new String[]{device})){if(c.moveToFirst())session=c.getLong(0);}
+                if((flags&64)!=0 || session<0){ContentValues s=new ContentValues();s.put("start",time);s.put("name","Controller session");s.put("config","Recorded on XIAO ESP32C6");s.put("device",device);s.put("first_record",index);session=db.insertOrThrow("sessions",null,s);}
+                ContentValues v=new ContentValues();v.put("session",session);v.put("device",device);v.put("record",index);v.put("time",time);put(v,"probe",(flags&8)!=0?b.getShort(10)/100.0:Double.NaN);put(v,"room",(flags&16)!=0?b.getShort(12)/100.0:Double.NaN);put(v,"humidity",(flags&32)!=0?(b.getShort(14)&65535)/100.0:Double.NaN);v.put("speed",data[0]==2?Math.min(3,data[16]&255):0);v.put("mode",data[0]==2&&(flags&2)!=0?1:0);v.put("fault",data[0]==6?data[18]&63:data[18]&255);put(v,"second_probe",data[0]==6&&(flags&2)!=0?b.getShort(16)/100.0:Double.NaN);v.put("phase",data[0]==6?(data[18]&255)>>6:0);db.insertOrThrow("samples",null,v);
+                if((flags&128)!=0){ContentValues s=new ContentValues();s.put("end",time);db.update("sessions",s,"id=?",new String[]{""+session});}
+            }
             setCursor(device,index+1);feelingsChanged=resolvePendingFeelings(db,device)>0;db.setTransactionSuccessful();
         }finally{db.endTransaction();}
         if(feelingsChanged)notifyFeelingsChanged();
@@ -83,10 +114,10 @@ public class Store extends SQLiteOpenHelper {
     }
     public static class Session { public long id,start,end; public int count; public String label; }
     public List<Session> sessions() { List<Session> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT id,start,COALESCE(end,0),name,(SELECT count(*) FROM samples WHERE session=sessions.id) FROM sessions ORDER BY start DESC",null)){while(c.moveToNext()){Session s=new Session();s.id=c.getLong(0);s.start=c.getLong(1);s.end=c.getLong(2);s.label=c.getString(3);s.count=c.getInt(4);out.add(s);}}return out; }
-    public static class Point { public long time; public double probe,room,humidity,secondProbe=Double.NaN; public int speed,phase; public Point(long t,double p,double r,double h,int s){time=t;probe=p;room=r;humidity=h;speed=s;} }
+    public static class Point { public long time; public double probe,room,humidity,secondProbe=Double.NaN,thirdProbe=Double.NaN,fanSetting=Double.NaN; public int speed,phase; public Point(long t,double p,double r,double h,int s){time=t;probe=p;room=r;humidity=h;speed=s;} }
     public static String phaseName(int phase){return switch(phase){case 1->"Baseline";case 2->"Lying on probes";case 3->"Off probes";default->"";};}
     private static double number(Cursor c,int col){return c.isNull(col)?Double.NaN:c.getDouble(col);}
-    public List<Point> points(long id) {List<Point> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,probe,room,humidity,speed,second_probe,phase FROM samples WHERE session=? ORDER BY time,id",new String[]{""+id})){while(c.moveToNext()){Point p=new Point(c.getLong(0),number(c,1),number(c,2),number(c,3),c.getInt(4));p.secondProbe=number(c,5);p.phase=c.getInt(6);out.add(p);}}return out;}
+    public List<Point> points(long id) {List<Point> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,probe,room,humidity,speed,second_probe,phase,third_probe,fan_setting FROM samples WHERE session=? ORDER BY time,id",new String[]{""+id})){while(c.moveToNext()){Point p=new Point(c.getLong(0),number(c,1),number(c,2),number(c,3),c.getInt(4));p.secondProbe=number(c,5);p.phase=c.getInt(6);p.thirdProbe=number(c,7);p.fanSetting=number(c,8);out.add(p);}}return out;}
     public List<Point> weather(long id){List<Point> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,temp,humidity FROM weather WHERE session=? ORDER BY time",new String[]{""+id})){while(c.moveToNext())out.add(new Point(c.getLong(0),number(c,1),Double.NaN,number(c,2),0));}return out;}
     public static final String FEELING_HOT="Hot",FEELING_COLD="Cold";
     public static class FeelingEntry {
@@ -184,8 +215,8 @@ public class Store extends SQLiteOpenHelper {
         }
         for(long[] entry:waiting){
             long time=entry[1],session=-1;
-            String sql="SELECT s.id FROM samples anchor JOIN sessions s ON s.id=anchor.session WHERE anchor.device=? AND anchor.record=CAST(? AS INTEGER) AND s.device=? AND s.start<=CAST(? AS INTEGER) AND COALESCE(s.end,(SELECT MAX(time) FROM samples WHERE session=s.id))>=CAST(? AS INTEGER) AND NOT EXISTS (SELECT 1 FROM sessions newer WHERE newer.device=s.device AND newer.first_record>s.first_record AND newer.start<=CAST(? AS INTEGER))";
-            try(Cursor match=db.rawQuery(sql,new String[]{device,""+entry[2],device,""+time,""+time,""+time})){
+            String sql="SELECT s.id FROM samples anchor JOIN sessions s ON s.id=anchor.session WHERE anchor.device=? AND (anchor.record=CAST(? AS INTEGER) OR anchor.third_probe_record=CAST(? AS INTEGER) OR anchor.fan_setting_record=CAST(? AS INTEGER)) AND s.device=? AND s.start<=CAST(? AS INTEGER) AND COALESCE(s.end,(SELECT MAX(time) FROM samples WHERE session=s.id))>=CAST(? AS INTEGER) AND NOT EXISTS (SELECT 1 FROM sessions newer WHERE newer.device=s.device AND newer.first_record>s.first_record AND newer.start<=CAST(? AS INTEGER))";
+            try(Cursor match=db.rawQuery(sql,new String[]{device,""+entry[2],""+entry[2],""+entry[2],device,""+time,""+time,""+time})){
                 if(match.moveToFirst()){session=match.getLong(0);if(match.moveToNext())session=-1;}
             }
             if(session>0){ContentValues value=new ContentValues();value.put("session",session);resolved+=db.update("feelings",value,"id=? AND session IS NULL",new String[]{""+entry[0]});}
@@ -225,7 +256,7 @@ public class Store extends SQLiteOpenHelper {
         }finally{db.endTransaction();}
         notifyFeelingsChanged();
     }
-    /** Separate export keeps the existing ten-column sensor CSV unchanged. */
+    /** Feelings have a separate export from sensor and outdoor readings. */
     public String feelingsCsv(long session){
         StringBuilder out=new StringBuilder("source,time_iso_utc,feeling,intensity_1_to_10,state,signed_value,time_local,zone_id,local_time_derived\n");
         for(FeelingEntry entry:feelings(session))out.append("user_feeling,").append(Instant.ofEpochMilli(entry.time)).append(',').append(entry.kind).append(',').append(entry.intensity)
@@ -235,9 +266,9 @@ public class Store extends SQLiteOpenHelper {
     public void weather(long id,long time,double temp,double humidity,String location){ContentValues v=new ContentValues();v.put("session",id);v.put("time",time);put(v,"temp",temp);put(v,"humidity",humidity);v.put("location",location);getWritableDatabase().insertWithOnConflict("weather",null,v,SQLiteDatabase.CONFLICT_REPLACE);}
     public String weatherLocation(long id){try(Cursor c=getReadableDatabase().rawQuery("SELECT location FROM weather WHERE session=? LIMIT 1",new String[]{""+id})){return c.moveToFirst()?c.getString(0):"";}}
     public String csv(long id) {
-        StringBuilder b=new StringBuilder("source,time_iso_utc,body_temperature_c,room_temperature_c,humidity_percent,controller_uptime_s,fault,location,second_body_temperature_c,test_phase\n");
-        try(Cursor c=getReadableDatabase().rawQuery("SELECT time,probe,room,humidity,speed,mode,uptime,fault,second_probe,phase FROM samples WHERE session=? ORDER BY time,id",new String[]{""+id})){while(c.moveToNext()) b.append("sensor,").append(java.time.Instant.ofEpochMilli(c.getLong(0))).append(',').append(val(c,1)).append(',').append(val(c,2)).append(',').append(val(c,3)).append(',').append(c.getLong(6)).append(',').append(c.getInt(7)).append(",,").append(val(c,8)).append(',').append(phaseName(c.getInt(9))).append('\n');}
-        try(Cursor c=getReadableDatabase().rawQuery("SELECT time,temp,humidity,location FROM weather WHERE session=? ORDER BY time",new String[]{""+id})){while(c.moveToNext()) b.append("outdoor_model,").append(java.time.Instant.ofEpochMilli(c.getLong(0))).append(',').append(val(c,1)).append(",,").append(val(c,2)).append(",,,\"").append(c.getString(3).replace("\"","\"\"")).append("\",,\n");}
+        StringBuilder b=new StringBuilder("source,time_iso_utc,body_temperature_c,room_temperature_c,humidity_percent,controller_uptime_s,fault,location,second_body_temperature_c,test_phase,third_body_temperature_c,fan_setting\n");
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT time,probe,room,humidity,speed,mode,uptime,fault,second_probe,phase,third_probe,fan_setting FROM samples WHERE session=? ORDER BY time,id",new String[]{""+id})){while(c.moveToNext()) b.append("sensor,").append(java.time.Instant.ofEpochMilli(c.getLong(0))).append(',').append(val(c,1)).append(',').append(val(c,2)).append(',').append(val(c,3)).append(',').append(c.getLong(6)).append(',').append(c.getInt(7)).append(",,").append(val(c,8)).append(',').append(phaseName(c.getInt(9))).append(',').append(val(c,10)).append(',').append(val(c,11)).append('\n');}
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT time,temp,humidity,location FROM weather WHERE session=? ORDER BY time",new String[]{""+id})){while(c.moveToNext()) b.append("outdoor_model,").append(java.time.Instant.ofEpochMilli(c.getLong(0))).append(',').append(val(c,1)).append(",,").append(val(c,2)).append(",,,\"").append(c.getString(3).replace("\"","\"\"")).append("\",,,,\n");}
         return b.toString();
     }
     private String val(Cursor c,int n){return c.isNull(n)?"":c.getString(n);}

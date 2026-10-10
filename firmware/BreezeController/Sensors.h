@@ -12,3 +12,5 @@ inline float thermistor(float mv,float supply=3300,float series=10000,float r25=
 inline bool validBody(float c){return isfinite(c)&&c>=-20&&c<=80;}
 inline float warmestBody(float a,float b){if(!validBody(a))return validBody(b)?b:NAN;return validBody(b)&&b>a?b:a;}
 inline uint8_t bodySource(float a,float b){return !validBody(a)?(validBody(b)?2:0):(validBody(b)&&b>a?2:1);}
+inline float warmestBody(float a,float b,float c){float warm=warmestBody(a,b);return validBody(c)&&(!validBody(warm)||c>warm)?c:warm;}
+inline uint8_t bodySource(float a,float b,float c){float warm=warmestBody(a,b);return validBody(c)&&(!validBody(warm)||c>warm)?3:bodySource(a,b);}

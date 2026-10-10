@@ -7,15 +7,17 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class GraphView extends View {
-    public static final int ALL_SERIES=63;
-    public static final String[] LABELS={"D0 body","D1 body","SHT40 temp","Outdoor temp","Humidity","Outdoor humidity"};
-    public static final int[] COLORS={0xff9ac5a4,0xffef9393,0xffe0b04f,0xff78a9ed,0xffc69cf0,0xff5ad3d0};
+    public static final int HIGHEST_BODY_SERIES=6,D2_BODY_SERIES=7,FAN_SETTING_SERIES=8;
+    public static final int ALL_SERIES=511,DEFAULT_SERIES=120|(1<<FAN_SETTING_SERIES);
+    private static final int TEMPERATURE_SERIES=15|(1<<HIGHEST_BODY_SERIES)|(1<<D2_BODY_SERIES);
+    public static final String[] LABELS={"D0 body","D1 body","SHT40 temp","Outdoor temp","Humidity","Outdoor humidity","Highest body temp","D2 body","Fan setting"};
+    public static final int[] COLORS={0xff9ac5a4,0xffef9393,0xffe0b04f,0xff78a9ed,0xffc69cf0,0xff5ad3d0,0xffffb86b,0xffd6b7ee,0xff79d5c3};
     private static final int MUTED=0xffa6b9ac,INK=0xffe5eee6;
     private List<Store.Point> points=new ArrayList<>(),outdoor=new ArrayList<>();
     private List<Store.FeelingEntry> feelings=new ArrayList<>();
     private final Paint paint=new Paint(3);
     private boolean fahrenheit=true;
-    private int selected=-1,visible=ALL_SERIES;
+    private int selected=-1,visible=DEFAULT_SERIES;
     private static final double MIN_WINDOW_MS=60000;
     private long sessionId=Long.MIN_VALUE;
     private double windowStart,windowEnd;
@@ -43,7 +45,7 @@ public class GraphView extends View {
     public void setReadingDetailsListener(ReadingDetailsListener listener){readingDetailsListener=listener;notifyReadingDetails();}
     public GraphView(Context c){
         super(c);setLayerType(View.LAYER_TYPE_SOFTWARE,null);
-        setContentDescription("Recorded temperatures and humidity, with a separate feeling chart from cold minus ten to warm plus ten and zero neutral. All charts share actual timestamps. Temperature on the right axis, humidity on the left. Pinch to zoom, drag sideways to pan, tap to inspect a reading, or double-tap to show the whole night.");
+        setContentDescription("Recorded temperatures, humidity and a stepped fan setting line from off through one to nine and H, the highest setting, on one graph, and a feeling chart from cold minus ten to warm plus ten and zero neutral. All readings share actual timestamps. Temperature on the right axis, humidity and fan setting on the left. Pinch to zoom, drag sideways to pan, tap to inspect a reading, or double-tap to show the whole night.");
         touchSlop=ViewConfiguration.get(c).getScaledTouchSlop();
         scale=new ScaleGestureDetector(c,new ScaleGestureDetector.SimpleOnScaleGestureListener(){
             @Override public boolean onScaleBegin(ScaleGestureDetector detector){
@@ -101,6 +103,7 @@ public class GraphView extends View {
     private float plotRight(){return getWidth()-dp(36);}
     private float chartBottom(){return getHeight()-dp(26);}
     private float sensorBottom(){return chartBottom()-(feelings.isEmpty()?0:dp(120));}
+    float fanSettingY(double setting){return sensorBottom()-(sensorBottom()-dp(30))*(float)setting/FanSetting.MAX;}
     private float feelingTop(){return chartBottom()-dp(80);}
     float feelingX(long time){return plotLeft()+(plotRight()-plotLeft())*(float)((time-windowStart)/windowSpan());}
     float feelingY(int signedValue){return chartBottom()-(chartBottom()-feelingTop())*(signedValue+10)/20f;}
@@ -138,9 +141,20 @@ public class GraphView extends View {
     public void visibleSeries(int mask){visible=mask&ALL_SERIES;notifyReadingDetails();invalidate();}
     private boolean enabled(int series){return (visible&(1<<series))!=0;}
     private boolean isOutdoor(int series){return series==3||series==5;}
+    private boolean isHumidity(int series){return series==4||series==5;}
+    private boolean breaksOnMissing(int series){return series==0||series==1||series==HIGHEST_BODY_SERIES||series==D2_BODY_SERIES;}
+    private long sampleGap(int series){return isOutdoor(series)?3700000:breaksOnMissing(series)||series==FAN_SETTING_SERIES?35000:65000;}
     private float dp(float d){return d*getResources().getDisplayMetrics().density;}
     private float unit(double c){return(float)(fahrenheit?c*1.8+32:c);}
-    private double value(Store.Point p,int series){return switch(series){case 1->p.secondProbe;case 2->p.room;case 4,5->p.humidity;default->p.probe;};}
+    private double value(Store.Point p,int series){return switch(series){case 1->p.secondProbe;case 2->p.room;case 4,5->p.humidity;case HIGHEST_BODY_SERIES->highestBodyTemperature(p);case D2_BODY_SERIES->p.thirdProbe;case FAN_SETTING_SERIES->validFanSetting(p.fanSetting);default->p.probe;};}
+    private double validFanSetting(double setting){return Double.isFinite(setting)&&setting>=0&&setting<=FanSetting.MAX&&setting==Math.rint(setting)?setting:Double.NaN;}
+    private double highestBodyTemperature(Store.Point point){
+        double highest=Double.NEGATIVE_INFINITY;
+        if(Double.isFinite(point.probe))highest=Math.max(highest,point.probe);
+        if(Double.isFinite(point.secondProbe))highest=Math.max(highest,point.secondProbe);
+        if(Double.isFinite(point.thirdProbe))highest=Math.max(highest,point.thirdProbe);
+        return Double.isFinite(highest)?highest:Double.NaN;
+    }
     private List<Store.Point> samples(int series){return isOutdoor(series)?outdoor:points;}
     private void text(Canvas c,String t,float x,float y,int color,float size){paint.setColor(color);paint.setTextSize(dp(size));paint.setStyle(Paint.Style.FILL);c.drawText(t,x,y,paint);}
     private void rightText(Canvas c,String t,float right,float y,int color,float size){paint.setTextSize(dp(size));text(c,t,right-paint.measureText(t),y,color,size);}
@@ -149,8 +163,8 @@ public class GraphView extends View {
         for(Store.FeelingEntry entry:feelings)if(entry.id==selectedFeeling){
             int signed=feelingValue(entry);String kind=signed>0?"Warm":"Cold";
             List<ReadingValue> readings=new ArrayList<>();
-            for(int series=0;series<6;series++)readings.add(readingValue(series,nearestFiniteValue(series,entry.time)));
-            String note="Nearest recorded readings";
+            for(int series=0;series<LABELS.length;series++)readings.add(readingValue(series,series==FAN_SETTING_SERIES?fanSettingAt(entry.time):nearestFiniteValue(series,entry.time)));
+            String note="Nearest recorded sensor readings; fan setting uses the latest reading at or before this time.";
             return new ReadingDetails(entry.time,readings,note,
                     new ReadingValue("Feeling",kind+" "+Math.abs(signed)+" / 10",feelingColor(entry)));
         }
@@ -158,7 +172,7 @@ public class GraphView extends View {
         Store.Point point=points.get(selected),weather=null;long distance=Long.MAX_VALUE;
         for(Store.Point sample:outdoor){long delta=Math.abs(sample.time-point.time);if(delta<distance&&delta<=3700000){distance=delta;weather=sample;}}
         List<ReadingValue> readings=new ArrayList<>();
-        for(int series=0;series<6;series++){
+        for(int series=0;series<LABELS.length;series++){
             Store.Point sample=isOutdoor(series)?weather:point;double number=sample==null?Double.NaN:value(sample,series);
             readings.add(readingValue(series,number));
         }
@@ -166,11 +180,17 @@ public class GraphView extends View {
         return new ReadingDetails(point.time,readings,note);
     }
     private ReadingValue readingValue(int series,double number){
-        String reading=!Double.isFinite(number)?"—":series>=4?String.format(Locale.US,"%.1f%%",number):String.format(Locale.US,"%.1f°%s",(double)unit(number),fahrenheit?"F":"C");
+        String reading=series==FAN_SETTING_SERIES?(!Double.isFinite(number)?"Unknown":number==0?"Off":FanSetting.label((int)number)):!Double.isFinite(number)?"—":isHumidity(series)?String.format(Locale.US,"%.1f%%",number):String.format(Locale.US,"%.1f°%s",(double)unit(number),fahrenheit?"F":"C");
         return new ReadingValue(LABELS[series],reading,COLORS[series]);
     }
+    private double fanSettingAt(long time){
+        int at=firstIndexAtOrAfter(points,time);
+        if(at==points.size()||points.get(at).time>time)at--;
+        if(at<0||time-points.get(at).time>sampleGap(FAN_SETTING_SERIES))return Double.NaN;
+        return value(points.get(at),FAN_SETTING_SERIES);
+    }
     private double nearestFiniteValue(int series,long time){
-        List<Store.Point> recorded=samples(series);long tolerance=isOutdoor(series)?3700000:series==0||series==1?35000:65000;
+        List<Store.Point> recorded=samples(series);long tolerance=sampleGap(series);
         long nearest=tolerance+1;double result=Double.NaN;
         for(int at=firstIndexAtOrAfter(recorded,time-tolerance);at<recorded.size();at++){
             Store.Point sample=recorded.get(at);if(sample.time>time+tolerance)break;
@@ -181,14 +201,14 @@ public class GraphView extends View {
     }
     double[] visibleTemperatureRangeC(){
         double min=Double.POSITIVE_INFINITY,max=Double.NEGATIVE_INFINITY;
-        for(int series=0;series<4;series++)if(enabled(series)){
+        for(int series=0;series<LABELS.length;series++)if(enabled(series)&&(TEMPERATURE_SERIES&(1<<series))!=0){
             List<Store.Point> list=samples(series);
             int first=Math.max(0,firstIndexAtOrAfter(list,windowStart)-1),limit=Math.min(list.size(),firstIndexAtOrAfter(list,windowEnd)+1);
-            long gap=isOutdoor(series)?3700000:series==0||series==1?35000:65000;
+            long gap=sampleGap(series);
             Store.Point previous=null;double previousValue=Double.NaN;
             for(int i=first;i<limit;i++){
                 Store.Point point=list.get(i);double current=value(point,series);
-                if(!Double.isFinite(current)){if(series==0||series==1)previous=null;continue;}
+                if(!Double.isFinite(current)){if(breaksOnMissing(series))previous=null;continue;}
                 if(point.time>=windowStart&&point.time<=windowEnd){min=Math.min(min,current);max=Math.max(max,current);}
                 if(previous!=null&&point.time>previous.time&&point.time-previous.time<=gap){
                     double from=Math.max(windowStart,previous.time),to=Math.min(windowEnd,point.time);
@@ -210,7 +230,7 @@ public class GraphView extends View {
     @Override protected void onDraw(Canvas c){
         super.onDraw(c);float l=plotLeft(),r=plotRight(),top=dp(30),bottom=sensorBottom(),footer=chartBottom();
         if(!hasTimeline()){text(c,"No readings downloaded for this night.",dp(4),dp(70),INK,13);return;}
-        double start=windowStart,end=windowEnd;boolean temperatures=!points.isEmpty()&&(visible&15)!=0,humidity=!points.isEmpty()&&(visible&48)!=0;
+        double start=windowStart,end=windowEnd;boolean temperatures=!points.isEmpty()&&(visible&TEMPERATURE_SERIES)!=0,humidity=!points.isEmpty()&&(visible&48)!=0;
         double[] temperatureRange=visibleTemperatureRangeC();float min=unit(temperatureRange[0]),max=unit(temperatureRange[1]);
         if(temperatures)rightText(c,fahrenheit?"°F":"°C",getWidth()-dp(1),dp(16),INK,11);
         if(humidity)text(c,"% RH",dp(1),dp(16),COLORS[4],10);
@@ -219,20 +239,41 @@ public class GraphView extends View {
             if(temperatures)rightText(c,temperatureTickLabel(temperatureRange[0]+(temperatureRange[1]-temperatureRange[0])*i/4,(max-min)/4),getWidth()-dp(1),y+dp(4),MUTED,10);
             if(humidity)text(c,""+(i*25),dp(1),y+dp(4),COLORS[4],10);
         }
-        for(int series=0;series<6;series++)if(enabled(series))line(c,series,start,end,series>=4?0:min,series>=4?100:max,l,r,top,bottom);
+        for(int series=0;series<LABELS.length;series++)if(enabled(series)&&series!=FAN_SETTING_SERIES)line(c,series,start,end,isHumidity(series)?0:min,isHumidity(series)?100:max,l,r,top,bottom);
         if(points.isEmpty())text(c,"No sensor readings downloaded yet.",l,top+dp(30),MUTED,12);
         else if(visible==0)text(c,"Check a reading below to show it.",l,top+dp(30),MUTED,12);
         int previousPhase=0;for(Store.Point point:points){if(point.phase!=0&&point.phase!=previousPhase&&point.time>=start&&point.time<=end){float x=l+(r-l)*(float)((point.time-start)/(end-start));paint.setColor(0xff8ea596);paint.setStrokeWidth(dp(1));c.drawLine(x,top,x,bottom,paint);String label=point.phase==1?"Baseline":point.phase==2?"On":"Off";text(c,label,Math.min(x+dp(3),r-dp(38)),top+dp(12),0xffd3dfd4,9);}previousPhase=point.phase;}
-        feelingMarkers(c,l,r,top,bottom);
+        fanLine(c,l,r,top,bottom,humidity);feelingMarkers(c,l,r,top,bottom);
         SimpleDateFormat tf=new SimpleDateFormat(end-start<=120000?"h:mm:ss a":"h:mm a",Locale.US);text(c,tf.format(new Date((long)start)),l,footer+dp(18),MUTED,10);String et=tf.format(new Date((long)end));paint.setTextSize(dp(10));text(c,et,r-paint.measureText(et),footer+dp(18),MUTED,10);
         if(selected>=0){
             Store.Point p=points.get(selected);float x=l+(r-l)*(float)((p.time-start)/(end-start));paint.setColor(INK);paint.setStrokeWidth(dp(1));c.save();c.clipRect(l,top,r,bottom);c.drawLine(x,top,x,bottom,paint);c.restore();
         }
     }
+    private void fanLine(Canvas canvas,float left,float right,float top,float bottom,boolean humidity){
+        if(!enabled(FAN_SETTING_SERIES))return;
+        int color=COLORS[FAN_SETTING_SERIES];
+        for(int setting:new int[]{0,3,6,FanSetting.MAX}){
+            text(canvas,FanSetting.label(setting),humidity?left+dp(3):dp(1),fanSettingY(setting)+dp(4),color,10);
+        }
+        Path path=new Path();Store.Point previous=null;double previousValue=Double.NaN;
+        int first=Math.max(0,firstIndexAtOrAfter(points,windowStart)-1),limit=Math.min(points.size(),firstIndexAtOrAfter(points,windowEnd)+1);
+        canvas.save();canvas.clipRect(left,top,right,bottom);
+        for(int i=first;i<limit;i++){
+            Store.Point point=points.get(i);double setting=value(point,FAN_SETTING_SERIES);float x=feelingX(point.time);
+            boolean connected=previous!=null&&Double.isFinite(previousValue)&&point.time>=previous.time&&point.time-previous.time<=sampleGap(FAN_SETTING_SERIES);
+            if(connected)path.lineTo(x,fanSettingY(previousValue));
+            if(Double.isFinite(setting)){
+                if(connected)path.lineTo(x,fanSettingY(setting));else path.moveTo(x,fanSettingY(setting));
+                if(point.time>=windowStart&&point.time<=windowEnd){paint.setColor(color);paint.setStyle(Paint.Style.FILL);canvas.drawCircle(x,fanSettingY(setting),dp(2),paint);}
+            }
+            previous=point;previousValue=setting;
+        }
+        paint.setColor(color);paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(dp(2));paint.setStrokeJoin(Paint.Join.ROUND);paint.setStrokeCap(Paint.Cap.ROUND);canvas.drawPath(path,paint);paint.setStyle(Paint.Style.FILL);canvas.restore();
+    }
     private int feelingColor(Store.FeelingEntry entry){return feelingValue(entry)>0?0xffefa172:0xff75c9ed;}
     private void feelingMarkers(Canvas canvas,float left,float right,float top,float bottom){
         if(feelings.isEmpty())return;
-        text(canvas,"Feeling · + warm / − cold · 0 neutral",left,bottom+dp(23),INK,11);
+        text(canvas,"Feeling · + warm / − cold · 0 neutral",left,feelingTop()-dp(17),INK,11);
         for(int value:new int[]{10,5,0,-5,-10}){
             float y=feelingY(value);paint.setColor(value==0?MUTED:0xff374e3f);paint.setStrokeWidth(dp(value==0?1.5f:1));canvas.drawLine(left,y,right,y,paint);
             text(canvas,(value>0?"+":"")+value,dp(1),y+dp(4),value>0?0xffefa172:value<0?0xff75c9ed:MUTED,10);
@@ -254,11 +295,11 @@ public class GraphView extends View {
     private void line(Canvas c,int series,double start,double end,float min,float max,float l,float r,float top,float bottom){
         List<Store.Point> list=samples(series);Path path=new Path();boolean has=false;long prev=0;
         // Retain compatibility with 30-second body / 60-second SHT40 historical sessions.
-        long gap=isOutdoor(series)?3700000:series==0||series==1?35000:65000;
+        long gap=sampleGap(series);
         c.save();c.clipRect(l,top,r,bottom);
         int first=Math.max(0,firstIndexAtOrAfter(list,start)-1),limit=Math.min(list.size(),firstIndexAtOrAfter(list,end)+1),stride=Math.max(1,(limit-first)/1500);
-        for(int i=first;i<limit;i+=stride){Store.Point p=list.get(i);double v=value(p,series);if(!Double.isFinite(v)){if(series==0||series==1)has=false;continue;}
-            float converted=series>=4?(float)v:unit(v);float x=l+(r-l)*(float)((p.time-start)/(end-start)),y=bottom-(bottom-top)*(converted-min)/(max-min);
+        for(int i=first;i<limit;i+=stride){Store.Point p=list.get(i);double v=value(p,series);if(!Double.isFinite(v)){if(breaksOnMissing(series))has=false;continue;}
+            float converted=isHumidity(series)?(float)v:unit(v);float x=l+(r-l)*(float)((p.time-start)/(end-start)),y=bottom-(bottom-top)*(converted-min)/(max-min);
             if(!has||p.time-prev>gap*stride)path.moveTo(x,y);else path.lineTo(x,y);has=true;prev=p.time;
         }
         paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(dp(2));paint.setColor(COLORS[series]);paint.setStrokeJoin(Paint.Join.ROUND);paint.setStrokeCap(Paint.Cap.ROUND);if(isOutdoor(series))paint.setPathEffect(new DashPathEffect(new float[]{dp(5),dp(4)},0));c.drawPath(path,paint);paint.setPathEffect(null);paint.setStyle(Paint.Style.FILL);c.restore();

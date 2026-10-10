@@ -28,9 +28,9 @@ public final class SignedFeelingGraphChecks {
     private SignedFeelingGraphChecks(Context context){this.context=context;density=context.getResources().getDisplayMetrics().density;}
     public static String run(Instrumentation test){
         Throwable[] failure={null};
-        test.runOnMainSync(()->{try{SignedFeelingGraphChecks checks=new SignedFeelingGraphChecks(test.getTargetContext());checks.signedPositions();checks.feelingWithReadings();checks.feelingsOnly();checks.integratedLegend();}catch(Throwable error){failure[0]=error;}});
+        test.runOnMainSync(()->{try{SignedFeelingGraphChecks checks=new SignedFeelingGraphChecks(test.getTargetContext());checks.signedPositions();checks.feelingWithReadings();checks.feelingsOnly();checks.integratedLegend();HighestBodyGraphChecks.run(test.getTargetContext());FanSettingGraphChecks.run(test.getTargetContext());}catch(Throwable error){failure[0]=error;}});
         if(failure[0]!=null)throw new AssertionError("Signed feeling graph check failed",failure[0]);
-        return "PASS: signed feeling marker heights, actual-time spacing, fixed scale, compact feeling with nearest finite sensor readings, stale gaps excluded, feelings-only selection/zoom/refresh, stable integrated trace checkboxes and night isolation\n";
+        return "PASS: signed feeling marker heights, actual-time spacing, fixed scale, compact feeling with nearest finite sensor readings, stale gaps excluded, feelings-only selection/zoom/refresh, stable integrated trace checkboxes, night isolation, highest body temperature values/rendering/gaps/units/defaults; stepped fan-setting overlay on the same plot, unchanged temperature/humidity plot pixels, Off/Unknown readouts, gaps, viewport clipping, historical feeling lookup, temperature/feeling scale isolation and one-time preference migrations\n";
     }
     private int px(float dp){return Math.round(dp*density);}
     private static void check(boolean valid,String message){if(!valid)throw new AssertionError(message);}
@@ -66,7 +66,7 @@ public final class SignedFeelingGraphChecks {
         GraphReadingDetailsView details=new GraphReadingDetailsView(context);GraphView.ReadingDetails[] inspected={null};
         graph.setReadingDetailsListener(reading->{inspected[0]=reading;details.showReading(reading);});
         graph.visibleSeries(GraphView.ALL_SERIES);tap(graph,px(48),px(100));
-        check(inspected[0]!=null&&inspected[0].time==START&&inspected[0].values.size()==6&&inspected[0].values.get(0).label.equals("D0 body")
+        check(inspected[0]!=null&&inspected[0].time==START&&inspected[0].values.size()==9&&inspected[0].values.get(0).label.equals("D0 body")
                 &&inspected[0].values.get(0).value.equals("32.0°C")&&inspected[0].values.get(4).value.equals("55.0%"),"Native selected-reading callback carries sensor labels and values with units");
         details.measure(View.MeasureSpec.makeMeasureSpec(px(320),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));
         details.layout(0,0,details.getMeasuredWidth(),details.getMeasuredHeight());
@@ -82,14 +82,15 @@ public final class SignedFeelingGraphChecks {
         GraphView graph=graph();Store.FeelingEntry warm=entry(20,30,7);warm.time+=12345;long time=warm.time;
         List<Store.Point> sensors=List.of(sample(time-60000,25,24,22.2,54.4),sample(time-20000,31.1,Double.NaN,Double.NaN,Double.NaN),
                 sample(time+10000,Double.NaN,30.2,23.3,Double.NaN),sample(time+100000,33,32,24,56));
+        sensors.get(2).thirdProbe=29.4;
         List<Store.Point> weather=List.of(sample(time-3600000,12.4,Double.NaN,Double.NaN,Double.NaN),sample(time+1800000,Double.NaN,Double.NaN,Double.NaN,67.8));
         GraphView.ReadingDetails[] inspected={null};GraphReadingDetailsView panel=new GraphReadingDetailsView(context);
         graph.setReadingDetailsListener(reading->{inspected[0]=reading;panel.showReading(reading);});
         graph.data(71,sensors,weather,false,GraphView.ALL_SERIES);graph.feelings(List.of(warm));
         tap(graph,graph.feelingX(time),graph.feelingY(7));
         GraphView.ReadingDetails details=inspected[0];check(details!=null&&details.feeling!=null&&details.feeling.label.equals("Feeling")&&details.feeling.value.equals("Warm 7 / 10"),"A selected feeling has exactly one compact feeling field");
-        String[] expected={"31.1°C","30.2°C","23.3°C","12.4°C","54.4%","67.8%"};
-        check(details.values.size()==6,"Selecting a feeling retains all enabled sensor readouts without extra feeling cells");
+        String[] expected={"31.1°C","30.2°C","23.3°C","12.4°C","54.4%","67.8%","30.2°C","29.4°C","Unknown"};
+        check(details.values.size()==9,"Selecting a feeling retains all sensor readouts and the highest value from one nearby recorded sample");
         for(int i=0;i<expected.length;i++)check(details.values.get(i).label.equals(GraphView.LABELS[i])&&details.values.get(i).value.equals(expected[i]),"Feeling-time nearest finite series "+i+" must be "+expected[i]);
         check(details.time==time&&details.timestamp.equals(new java.text.SimpleDateFormat("MMM d, yyyy · h:mm:ss a",java.util.Locale.US).format(new java.util.Date(time))),"Header receives the exact feeling time rather than a nearby sensor timestamp");
         graph.data(71,sensors,weather,false,GraphView.ALL_SERIES);graph.feelings(List.of(warm));
@@ -100,10 +101,10 @@ public final class SignedFeelingGraphChecks {
             try(FileOutputStream output=new FileOutputStream(new File(context.getCacheDir(),"feeling-with-readings.png"))){check(image.compress(Bitmap.CompressFormat.PNG,100,output),"Save combined feeling and readings preview");}
             catch(IOException failure){throw new AssertionError("Could not save combined feeling and readings preview",failure);}
         }finally{image.recycle();}
-        graph.visibleSeries((1<<0)|(1<<1)|(1<<4));check(inspected[0].values.size()==6&&inspected[0].feeling!=null&&visible(graph)==19,"Trace filtering preserves all six combined readouts");
+        graph.visibleSeries((1<<0)|(1<<1)|(1<<4));check(inspected[0].values.size()==9&&inspected[0].feeling!=null&&visible(graph)==19,"Trace filtering preserves all nine combined readouts");
         graph.visibleSeries(GraphView.ALL_SERIES);Store.FeelingEntry distant=entry(21,210,-3);distant.time=time+180*MINUTE;graph.feelings(List.of(warm,distant));
         tap(graph,graph.feelingX(distant.time),graph.feelingY(-3));check(inspected[0].feeling.value.equals("Cold 3 / 10"),"Distant cold selection retains its own rating");
-        for(GraphView.ReadingValue value:inspected[0].values)check(value.value.equals("—"),"No distant sensor or weather sample may masquerade as a nearby reading");
+        for(GraphView.ReadingValue value:inspected[0].values)check(value.value.equals(value.label.equals("Fan setting")?"Unknown":"—"),"No distant sensor or weather sample may masquerade as a nearby reading");
     }
     private void feelingsOnly(){
         GraphView graph=graph();Store.FeelingEntry first=entry(10,10,1),middle=entry(11,30,-4),last=entry(12,70,10);
@@ -115,8 +116,8 @@ public final class SignedFeelingGraphChecks {
         Bitmap bitmap=Bitmap.createBitmap(px(360),px(346),Bitmap.Config.ARGB_8888);
         try{graph.draw(new Canvas(bitmap));check(bitmap.getPixel(px(132),px(296))==COLD,"Feelings render before sensor records arrive");}finally{bitmap.recycle();}
         tap(graph,graph.feelingX(middle.time),graph.feelingY(-4));check(selected(graph)==middle.id,"Feelings-only marker inspection does not require a sensor point");
-        check(inspected[0]!=null&&inspected[0].feeling!=null&&inspected[0].values.size()==6,"A feelings-only night still has a compact rating and enabled readout slots");
-        for(GraphView.ReadingValue value:inspected[0].values)check(value.value.equals("—"),"Missing sensor records remain missing in feeling details");
+        check(inspected[0]!=null&&inspected[0].feeling!=null&&inspected[0].values.size()==9,"A feelings-only night still has a compact rating and all readout slots");
+        for(GraphView.ReadingValue value:inspected[0].values)check(value.value.equals(value.label.equals("Fan setting")?"Unknown":"—"),"Missing sensor records remain missing in feeling details");
         pinch(graph);check(graph.isZoomed(),"Feelings-only timeline supports real pinch gestures");
         double start=graph.visibleStartTime(),end=graph.visibleEndTime();
         graph.data(71,new ArrayList<>(),new ArrayList<>(),true,0);graph.feelings(entries);
@@ -132,27 +133,27 @@ public final class SignedFeelingGraphChecks {
         GraphView.ReadingDetails[] inspected={null};int[] mask={GraphView.ALL_SERIES},callbacks={0};
         panel.setOnSeriesChangedListener((series,checked)->{callbacks[0]++;mask[0]=checked?mask[0]|(1<<series):mask[0]&~(1<<series);panel.setVisibleSeries(mask[0]);graph.visibleSeries(mask[0]);});
         List<CheckBox> controls=new ArrayList<>();checkboxes(panel,controls);
-        check(controls.size()==6&&panel.getVisibility()==View.VISIBLE,"All six trace controls are present before the first graph selection");
+        check(controls.size()==9&&panel.getVisibility()==View.VISIBLE,"All nine trace controls are present before the first graph selection");
         panel.setVisibleSeries(0);panel.showReading(null);check(callbacks[0]==0,"Programmatic mask and empty refresh do not fire user callbacks");
-        for(CheckBox control:controls){check(!control.isChecked()&&control.isEnabled(),"An unchecked trace stays available");TextView value=(TextView)((ViewGroup)control.getParent()).getChildAt(1);check(value.getText().toString().equals("—"),"Empty readings keep their controls and a dash");}
+        for(CheckBox control:controls){check(!control.isChecked()&&control.isEnabled(),"An unchecked trace stays available");TextView value=(TextView)((ViewGroup)control.getParent()).getChildAt(1);check(value.getText().toString().equals(control.getText().toString().equals("Fan setting")?"Unknown":"—"),"Empty readings keep their controls and a dash");}
         panel.setVisibleSeries(GraphView.ALL_SERIES);graph.setReadingDetailsListener(reading->{inspected[0]=reading;panel.showReading(reading);});
         List<Store.Point> sensors=List.of(sample(START,32,31,23,55),sample(START+MINUTE,33,31,24,56));
         List<Store.Point> weather=List.of(sample(START,100,Double.NaN,Double.NaN,70),sample(START+MINUTE,100,Double.NaN,Double.NaN,71));
         graph.data(71,sensors,weather,false,GraphView.ALL_SERIES);tap(graph,px(48),px(100));
         double allMaximum=graph.visibleTemperatureRangeC()[1];
         panel.measure(View.MeasureSpec.makeMeasureSpec(px(372),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));panel.layout(0,0,panel.getMeasuredWidth(),panel.getMeasuredHeight());
-        if(context.getResources().getConfiguration().fontScale<=1.05f)check(((ViewGroup)panel.getChildAt(0)).getChildCount()==3,"Six readouts fit three rows at the phone content width");
+        if(context.getResources().getConfiguration().fontScale<=1.05f)check(((ViewGroup)panel.getChildAt(0)).getChildCount()==5,"Nine readouts fit five rows at the phone content width");
         for(CheckBox control:controls)check(control.getHeight()>=px(48),"Each checkbox has a 48dp touch row");
         controls.get(3).performClick();
         check(callbacks[0]==1&&!controls.get(3).isChecked()&&visible(graph)==(GraphView.ALL_SERIES&~(1<<3)),"Unchecking updates the plotted mask once");
         check(graph.visibleTemperatureRangeC()[1]<40&&allMaximum>100,"The unchecked outdoor trace no longer affects the temperature scale");
-        check(inspected[0].values.size()==6&&inspected[0].values.get(3).value.equals("100.0°C"),"An unchecked trace retains its actual large reading");
+        check(inspected[0].values.size()==9&&inspected[0].values.get(3).value.equals("100.0°C"),"An unchecked trace retains its actual large reading");
         graph.data(71,sensors,weather,false,mask[0]);List<CheckBox> refreshed=new ArrayList<>();checkboxes(panel,refreshed);
         check(controls.equals(refreshed)&&callbacks[0]==1,"Refresh preserves each checkbox instance and does not toggle it");
         controls.get(3).performClick();
         check(callbacks[0]==2&&controls.get(3).isChecked()&&visible(graph)==GraphView.ALL_SERIES,"The same unchecked control turns its trace back on");
-        panel.setVisibleSeries(0);graph.visibleSeries(0);check(inspected[0].values.size()==6&&callbacks[0]==2,"All traces can be hidden without removing any readout or firing sync callbacks");
-        panel.showReading(null);refreshed.clear();checkboxes(panel,refreshed);check(controls.equals(refreshed)&&panel.getVisibility()==View.VISIBLE,"Clearing selection preserves all six interactive controls");
+        panel.setVisibleSeries(0);graph.visibleSeries(0);check(inspected[0].values.size()==9&&callbacks[0]==2,"All traces can be hidden without removing any readout or firing sync callbacks");
+        panel.showReading(null);refreshed.clear();checkboxes(panel,refreshed);check(controls.equals(refreshed)&&panel.getVisibility()==View.VISIBLE,"Clearing selection preserves all nine interactive controls");
     }
     private static void checkboxes(View view,List<CheckBox> result){if(view instanceof CheckBox)result.add((CheckBox)view);else if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int at=0;at<group.getChildCount();at++)checkboxes(group.getChildAt(at),result);}}
     private static int visible(GraphView graph){try{Field field=GraphView.class.getDeclaredField("visible");field.setAccessible(true);return field.getInt(graph);}catch(ReflectiveOperationException failure){throw new AssertionError(failure);}}

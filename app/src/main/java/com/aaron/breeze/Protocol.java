@@ -8,7 +8,16 @@ public final class Protocol {
     private Protocol() {}
     public static final int START_RECORDING=7, STOP_RECORDING=8;
     public static boolean sensorFirmware(byte[] data){return data.length==20&&data[0]==4&&(data[4]&255)>=6;}
-    public static final int LEARN=1,CANCEL_LEARN=2,CLEAR_LEARNED=3,SEND_IR=4,TARGET_SPEED=5,SYNC_SPEED=6,AUTO=7,VERIFIED=8,FORGET_FAN=9,CONTACT_TEST=10,MARK_TEST=11,IR_RECEIVER_TEST=12;
+    public static boolean thirdProbeFirmware(byte[] data){return sensorFirmware(data)&&(data[4]&255)>=7&&(data[8]&16)!=0;}
+    public static final long DEFAULT_TELEMETRY_INTERVAL_MS=1000;
+    public static long telemetryIntervalMs(byte[] data){
+        if(data==null||!sensorFirmware(data)||(data[4]&255)<7||(data[8]&64)==0)return DEFAULT_TELEMETRY_INTERVAL_MS;
+        int seconds=data[11]&255;
+        return seconds>=1&&seconds<=60?seconds*1000L:DEFAULT_TELEMETRY_INTERVAL_MS;
+    }
+    public static long telemetryFreshnessMs(long intervalMs){return intervalMs<=DEFAULT_TELEMETRY_INTERVAL_MS?6000:Math.max(6000,intervalMs*2+5000);}
+    public static long telemetryLinkTimeoutMs(long intervalMs){return Math.max(15000,intervalMs*3);}
+    public static final int LEARN=1,CANCEL_LEARN=2,CLEAR_LEARNED=3,SEND_IR=4,TARGET_SPEED=5,SYNC_SPEED=6,AUTO=7,VERIFIED=8,FORGET_FAN=9,CONTACT_TEST=10,MARK_TEST=11,IR_RECEIVER_TEST=12,LOGIC_GLOBAL=13,LOGIC_RULE=14,LOGIC_BOOST=15,LOGIC_COMMIT=16;
     public static final String[] COMMANDS={"Power","Speed +","Speed -","Mode","Horizontal oscillation","Vertical oscillation","Extra 1","Extra 2","Extra 3","Extra 4","Extra 5","Extra 6"};
     public static class FanState {
         public int flags,speed,target,learning,learnState,learned,error,source,resultSlot,lastSent,sendCounter,phase;
@@ -22,7 +31,7 @@ public final class Protocol {
         if(data.length!=20||data[0]!=5||data[19]!=7)throw new IllegalArgumentException("Unsupported fan packet");
         ByteBuffer b=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);FanState f=new FanState();f.time=time;f.flags=data[1]&255;
         f.secondProbe=(f.flags&1)!=0?b.getShort(2)/100.0:Double.NaN;f.speed=data[4]&255;f.target=data[5]&255;f.learning=data[6]&255;f.learnState=data[7]&255;f.learned=b.getShort(8)&65535;f.error=data[10]&255;f.source=data[11]&255;f.warmerBody=f.source==0?Double.NaN:b.getShort(12)/100.0;f.resultSlot=data[14]&255;f.lastSent=data[15]&255;f.sendCounter=b.getShort(16)&65535;f.phase=data[18]&255;
-        if(f.phase>3||f.speed>9||f.target>9||f.source>2||f.learnState>5||(f.learning!=255&&f.learning>=COMMANDS.length)||(f.resultSlot!=255&&f.resultSlot>=COMMANDS.length)||(f.lastSent!=255&&f.lastSent>=COMMANDS.length)||(f.learned&~4095)!=0||(Double.isFinite(f.secondProbe)&&(f.secondProbe< -20||f.secondProbe>80)))throw new IllegalArgumentException("Invalid fan packet");
+        if(f.phase>3||f.speed>FanSetting.MAX||f.target>FanSetting.MAX||f.source>3||f.learnState>5||(f.learning!=255&&f.learning>=COMMANDS.length)||(f.resultSlot!=255&&f.resultSlot>=COMMANDS.length)||(f.lastSent!=255&&f.lastSent>=COMMANDS.length)||(f.learned&~4095)!=0||(Double.isFinite(f.secondProbe)&&(f.secondProbe< -20||f.secondProbe>80)))throw new IllegalArgumentException("Invalid fan packet");
         return f;
     }
     public static byte[] fan(int action,int value,int argument,int seq){
@@ -30,7 +39,7 @@ public final class Protocol {
         if(action==IR_RECEIVER_TEST&&(value!=0||argument!=0))throw new IllegalArgumentException("Invalid LED receiver test setting");
         if(action==MARK_TEST&&(value<1||value>3))throw new IllegalArgumentException("Unknown probe test marker");
         if((action==LEARN||action==CLEAR_LEARNED||action==SEND_IR)&&(value<0||value>=COMMANDS.length))throw new IllegalArgumentException("Unknown remote button");
-        if((action==TARGET_SPEED||action==SYNC_SPEED)&&(value<1||value>9))throw new IllegalArgumentException("Speed must be 1–9");
+        if((action==TARGET_SPEED&&(value<1||value>FanSetting.MAX))||(action==SYNC_SPEED&&(value<0||value>FanSetting.MAX)))throw new IllegalArgumentException("Speed must be 1–9 or H, or Off when synchronizing");
         if(action==LEARN&&(argument<30||argument>60))throw new IllegalArgumentException("Raw carrier must be 30–60 kHz");
         if(action==SYNC_SPEED&&argument!=1)throw new IllegalArgumentException("Confirm fan is on in Normal mode");
         return packet(6,seq).put((byte)action).put((byte)value).putShort((short)argument).array();
@@ -81,21 +90,42 @@ public final class Protocol {
         public int flags, sequence, ack, error, commandError;
         public long uptime, time;
         public double probe, room, humidity;
+        public double thirdProbe=Double.NaN;
         public boolean active() { return (flags & 1) != 0; }
         public boolean storageReady() { return (flags & 128) != 0; }
     }
     public static Reading decode(byte[] data, long time) {
+        return decode(data,time,false);
+    }
+    public static Reading decode(byte[] data, long time, boolean thirdProbeSupported) {
         if (data.length != 20 || data[0] != 1) throw new IllegalArgumentException("Unsupported controller packet");
         ByteBuffer b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         Reading r = new Reading(); r.time=time; r.flags=data[1]&255; r.sequence=b.getShort(2)&65535;
         r.probe=(r.flags&8)!=0 ? b.getShort(4)/100.0 : Double.NaN;
         r.room=(r.flags&16)!=0 ? b.getShort(6)/100.0 : Double.NaN;
         r.humidity=(r.flags&32)!=0 ? (b.getShort(8)&65535)/100.0 : Double.NaN;
+        r.thirdProbe=thirdProbeSupported&&(r.flags&2)!=0 ? b.getShort(10)/100.0 : Double.NaN;
         r.uptime=Integer.toUnsignedLong(b.getInt(12));
         r.ack=b.getShort(16)&65535; r.error=data[18]&255;
         r.commandError=data[19]&255;
-        if ((Double.isFinite(r.probe)&&(r.probe < -20 || r.probe > 80)) || (Double.isFinite(r.humidity)&&r.humidity > 100)) throw new IllegalArgumentException("Invalid sensor packet");
+        if ((Double.isFinite(r.probe)&&(r.probe < -20 || r.probe > 80)) || (Double.isFinite(r.thirdProbe)&&(r.thirdProbe < -20 || r.thirdProbe > 80)) || (Double.isFinite(r.humidity)&&r.humidity > 100)) throw new IllegalArgumentException("Invalid sensor packet");
         return r;
+    }
+    public static byte[] logicGlobal(LogicProfile p,int seq){p.validate();return packet(6,seq).put((byte)LOGIC_GLOBAL).put((byte)p.probeMask).putShort((short)Math.round(p.roomBoundaryF*100)).putShort((short)p.averageSeconds).putShort((short)p.riseSeconds).putShort((short)p.fallSeconds).put((byte)p.maxSpeed).put((byte)2).putShort((short)Math.round(p.coolRoomThresholdF*100)).array();}
+    public static byte[] logicRule(LogicProfile p,int index,int seq){p.validate();if(index<0||index>1)throw new IllegalArgumentException("Unknown room rule.");LogicProfile.Rule r=index==0?p.warm:p.cool;return packet(6,seq).put((byte)LOGIC_RULE).put((byte)index).putShort((short)Math.round(r.bodyThresholdF*100)).putShort((short)Math.round(r.stepF*100)).put((byte)r.minimumSpeed).put((byte)(r.offBelow?1:0)).put((byte)1).array();}
+    public static byte[] logicBoost(LogicProfile p,int index,int seq){p.validate();if(index<0||index>1)throw new IllegalArgumentException("Unknown room rule.");LogicProfile.Boost b=(index==0?p.warm:p.cool).boost;return packet(6,seq).put((byte)LOGIC_BOOST).put((byte)index).put((byte)(b.enabled?1:0)).put((byte)b.amount).putShort((short)Math.round(b.triggerRiseF*100)).putShort((short)b.windowSeconds).putShort((short)b.riseSeconds).putShort((short)b.holdSeconds).putShort((short)b.returnSeconds).put((byte)b.curve).put((byte)1).array();}
+    public static byte[] logicCommit(int seq){return packet(6,seq).put((byte)LOGIC_COMMIT).array();}
+    public static final class LogicState {
+        public int flags,rule,target,boostSeconds,revision,error,probeMask;
+        public double averageBodyF,roomF,thirdProbe;
+        public long time;
+        public boolean automatic(){return (flags&1)!=0;}
+        public boolean boosting(){return (flags&2)!=0;}
+        public boolean waitingSync(){return (flags&8)!=0;}
+        public boolean noBody(){return (flags&16)!=0;}
+    }
+    public static LogicState decodeLogic(byte[] data,long time){
+        if(data.length!=20||data[0]!=9||data[19]!=1)throw new IllegalArgumentException("Unsupported logic packet.");ByteBuffer p=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);LogicState l=new LogicState();l.time=time;l.flags=data[1]&255;l.rule=data[2]&255;l.target=data[3]&255;l.averageBodyF=l.noBody()?Double.NaN:p.getShort(4)/100.0;l.roomF=p.getShort(6)/100.0;l.boostSeconds=p.getShort(8)&65535;l.revision=p.getShort(10)&65535;l.error=data[12]&255;l.probeMask=data[13]&255;l.thirdProbe=(l.flags&32)!=0?p.getShort(14)/100.0:Double.NaN;if((l.rule>1&&l.rule!=255)||l.target>FanSetting.MAX||l.boostSeconds>3600||l.probeMask<1||l.probeMask>7)throw new IllegalArgumentException("Invalid logic state.");return l;
     }
     private static ByteBuffer packet(int op,int seq) { return ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN).put((byte)1).put((byte)op).putShort((short)seq); }
     public static byte[] control(int action,int value,int seq) { return packet(2,seq).put((byte)action).put((byte)value).array(); }
@@ -104,10 +134,24 @@ public final class Protocol {
     public static byte[] retire(long savedCursor,int seq) { return packet(5,seq).putInt((int)savedCursor).array(); }
     public static int crc8(byte[] bytes,int length){int crc=0;for(int i=0;i<length;i++){crc^=bytes[i]&255;for(int bit=0;bit<8;bit++)crc=((crc&128)!=0?(crc<<1)^7:crc<<1)&255;}return crc;}
     public static void validateRecord(byte[] b){
-        if(b.length!=20||(b[0]!=2&&b[0]!=6)||(b[19]&255)!=crc8(b,19))throw new IllegalArgumentException("Damaged controller record; not acknowledged");
+        if(b.length!=20||(b[0]!=2&&b[0]!=6&&b[0]!=10&&b[0]!=11)||(b[19]&255)!=crc8(b,19))throw new IllegalArgumentException("Damaged controller record; not acknowledged");
         if(b[0]==2&&((b[16]&255)>3||(b[17]&255)>180))throw new IllegalArgumentException("Damaged legacy record");
         if(b[0]==6&&(b[1]&2)!=0){int v=ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN).getShort(16);if(v< -2000||v>8000)throw new IllegalArgumentException("Damaged second probe record");}
+        if(b[0]==10){
+            ByteBuffer p=ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN);
+            long index=Integer.toUnsignedLong(p.getInt(2)),parent=Integer.toUnsignedLong(p.getInt(12));
+            int value=p.getShort(10);
+            if((b[1]&~8)!=0||index==0||parent!=index-1||b[16]!=0||b[17]!=0||b[18]!=0||((b[1]&8)!=0&&(value< -2000||value>8000)))
+                throw new IllegalArgumentException("Damaged third probe record");
+        }
+        if(b[0]==11){
+            ByteBuffer p=ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN);
+            long index=Integer.toUnsignedLong(p.getInt(2)),parent=Integer.toUnsignedLong(p.getInt(12));
+            int setting=b[10]&255;
+            if((b[1]&~1)!=0||index<2||parent!=index-2||b[11]!=0||b[16]!=0||b[17]!=0||b[18]!=0||setting>FanSetting.MAX||((b[1]&1)==0&&setting!=0))
+                throw new IllegalArgumentException("Damaged fan setting record");
+        }
     }
-    public static String error(int code) { return switch(code) { case 0 -> ""; case 1 -> "Unsupported command"; case 3 -> "Both body probes unavailable"; case 4 -> "Stop recording first"; case 6 -> "Controller storage unavailable or full: recording stopped"; case 7 -> "Set the controller clock before starting"; case 20 -> "Command not learned"; case 21 -> "Sync current speed with the fan on in Normal mode"; case 22 -> "Controller busy; wait for recording or IR work to finish"; case 23 -> "Learning timed out; try again"; case 24 -> "Could not save IR data in controller storage"; case 25 -> "IR capture too short or too long; try one button press"; case 26 -> "Invalid fan setting"; case 27 -> "No usable body probe; automatic changes stopped"; case 28 -> "Test the learned commands on the physical fan first"; case 29 -> "Original remote detected; sync current speed again"; case 30 -> "Automatic rules are not defined yet. Collect the probe test data first."; default -> "Controller error " + code; }; }
+    public static String error(int code) { return switch(code) { case 0 -> ""; case 1 -> "Unsupported command"; case 3 -> "All body probes unavailable"; case 4 -> "Stop recording first"; case 6 -> "Controller storage unavailable or full: recording stopped"; case 7 -> "Set the controller clock before starting"; case 20 -> "Command not learned"; case 21 -> "Correct the current fan setting on Home (0 = Off)"; case 22 -> "Controller busy; wait for recording or IR work to finish"; case 23 -> "Learning timed out; try again"; case 24 -> "Could not save IR data in controller storage"; case 25 -> "IR capture too short or too long; try one button press"; case 26 -> "Invalid fan setting"; case 27 -> "No usable body probe; automatic changes stopped"; case 28 -> "Test the learned commands on the physical fan first"; case 29 -> "Original remote detected; sync current speed again"; case 30 -> "Automatic rules are not defined yet. Collect the probe test data first."; case 31 -> "Room temperature unavailable; holding the last fan setting."; default -> "Controller error " + code; }; }
 
 }

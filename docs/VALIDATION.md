@@ -1,5 +1,242 @@
 # Breeze validation history
 
+## Firmware 1.2.14 and unresolved Setup behavior — October 9, 2026
+
+- Firmware 1.2.14 compiled and was accepted by the existing Wi-Fi updater.
+  The application image is 1,601,488 bytes with 167,984 bytes of OTA headroom;
+  SHA-256 `97D86B4C734891ACD0C6DC9F4DE37695155936B4CCF416679A9707ACEB2A1AF2`.
+  Fresh BLE reported 1.2.14, rollback pending false, learned mask 63, and
+  synchronized estimate 4. Synchronization emitted no IR (`sendCounter=0`).
+- All eight firmware host suites passed locally: `ir_test.py`,
+  `fan_first_send_test.py`, `ir_nvs_migration_test.py`, `logic_control_test.py`,
+  `third_record_test.py`, `telemetry_cadence_test.py`,
+  `ir_symphony_replay_test.py`, and `fan_automatic_interval_test.py`.
+  Automatic normal/boost/Power/TARGET sends now respect 1,000 ms since the latest
+  actual transmission completion. Tests exercise 999/1000 ms boundaries,
+  nonzero burst duration, wake repeats, rollover, slower configured timing,
+  and cancellation when entering the room gap. Direct manual SEND and the
+  300 ms wake repeat are unchanged.
+- Deployment logs remain local under `firmware/out-auto-one-second-20261009`:
+  `wireless-install.log`, `pre-update.log`, and `health-and-confirmed-four.log`.
+  These build outputs are not published. Three tests above depend on unpublished
+  legacy/NVS fixtures; see the handoff's reproduction limitations.
+- After the user enabled Logic, the phone reported room 72.6°F, body average
+  about 75°F, estimate/target 4, no errors, and zero IR sends since boot. Warm
+  was 73°F and Cool 72°F; the checked Cool off-below threshold was 97.5°F.
+  Source and live status agree that the room gap holds before body shutoff is
+  considered. This explains this incident but does not resolve the intended
+  product behavior. The user requested a full Setup review, with no implementation.
+  See [the current investigation handoff](SETUP_REDESIGN_REVIEW.md).
+
+## One-screen Home, command-first corrections, and ten-second BLE telemetry — October 9, 2026
+
+- Home uses the top half for six History-styled live readouts without checkboxes and the bottom half for six fan commands, Logic, recording, Reconnect, and editable Current fan setting. No Home scrolling, elevation animation, or sending Toast. Confirmed Logic active is blue; paused is purple. The existing Fan page UI is retained.
+- A Home fan command precedes any edited-setting correction. The correction waits for both the GATT write callback and matching successful ACK, projects the command's result, and never sends AUTO. Power-off corrections first establish the declared retained on-speed, then Off; these SYNC packets do not emit IR. Known ordinary commands add no SYNC. Ambiguous effects quarantine the old draft until a new human edit or Done; newer confirmations and edit revisions supersede older callbacks. Accepted physical sends are never replayed.
+- Final Android artifact: `app/out-telemetry-20261009/outputs/apk/debug/app-debug.apk`, SHA-256 **ADB113A96993D24231E681F75C075ED6886B65137AF828233EDB43E119046DCE**. App/test builds, all **85 JVM tests**, and lint passed (0 errors, 28 warnings). Emulator-only Home instrumentation passed **37 touches**, including six OS-injected Power/Speed touches, cold start, tab returns, resume, focused input, mid-gesture readiness loss, draft ordering and revision protection. Strict layout/readout checks passed at font scales 1.0 and 1.3. Real-service fake-BLE queue tests passed ACK/write ordering, failed/rejected sends, retained speed, quarantined drafts, newer Done priority, cadence freshness and recovery. Controls regression passed; the earlier battery-policy check passed 120-second grace, cleanup, immediate manual disconnect and microphone veto. Logs are in that build's `verification/` directory.
+- Installed with `adb install -r` on Pixel 8 Pro; installed APK hash matches the final build. SQLite integrity and complete row comparisons preserve all **7 sessions, 40,974 samples, 3 feelings, 34 weather rows and the cursor**. Named profiles, graph choices and microphone veto match the earlier snapshot. Active settings match the copy taken immediately before the final install. That active profile already had Warm body threshold **96°F**; the earlier task backup had 98°F. The current value was preserved, and the discrepancy is recorded rather than attributed or silently restored. See `data-preservation.json` and the two phone snapshots. The phone remained locked; physical screen taps and actual fan reception were not established by the emulator or installed hash.
+- The user explicitly reported current fan setting **2**. One non-actuating SYNC established that anchor, received successful ACK in **47 ms**, and confirmed a synchronized estimate of 2. The phone's cache was updated to that confirmed value while stopped, preserving every unrelated preference. No manual Power or Speed test was sent. See `anchor-confirmation.json`.
+- Firmware **1.2.11** is installed over Wi-Fi: `firmware/out-telemetry-20261009/BreezeController.ino.bin`, **1,601,120 bytes**, 168,352 bytes of slot headroom, SHA-256 **1280DC61F71821B6165A65E4E1AC376174F07DBA67C08AD81FC87E5914FE15E4**. Before deployment, its ESP32-C6 header/version/size and partition binary were checked against the verified 1.2.10 recovery. OTA source/script, partition layout and compact learned-code storage are unchanged. Upload acceptance, reboot, health confirmation, retained learned mask 63, subsequent OTA Ready and cancellation to Idle all passed. Live quiet observation found exactly three of each full telemetry packet type over 31 seconds, with sensor gaps **10.015 / 9.969 seconds**; CLOCK ACK took **62 ms**. Internal body sampling remains 1 Hz, durable recording 10 seconds, command ACKs immediate, and meaningful state changes prompt. Host session, D2, IR, Logic, first-send, NVS-migration and telemetry-cadence suites passed. This establishes software/radio behavior, not optical emission, physical fan response or oscillation coverage.
+
+## Named Logic profile Save/Load — October 9, 2026
+
+- Added same-row **Save profile** / **Load profile** controls at both ends of Setup's Logic section. Explicit Save keeps a named phone snapshot; autosave only updates active settings. First-use migration preserves the existing active profile. Loading cancels the previous form's delayed save before rebuilding and applies the selected profile through the existing controller protocol. No firmware or OTA files changed for this update.
+- `out-profile-load-20261009`: app/test APK builds passed, all 80 JVM tests passed, and lint reported 0 errors (26 warnings). Emulator-only `namedLogicProfiles` instrumentation passed legacy seeding, distinct names sharing an identity, full-field round trips, same-name replacement, active-only autosave, trimmed names, malformed-library preservation, both Save/Load rows, picker cancellation, one apply per selection, delayed-save protection, and offline persistence. Tests used isolated preferences/database paths and a fake controller. Emulator screenshot inspected: `verification/setup-emulator.png`.
+- Installed the app update on Pixel 8 Pro with data-preserving `adb install -r`. Installed APK SHA-256 matches `B18BDAE5E4CD46D7C4CB5306A215641E2BB4D12181E1F997658AEC8C5AD992C2`. Before/after snapshots passed database integrity and preserved all 7 sessions, 40,974 samples, 3 feelings, and 34 weather rows. The active profile remained unchanged and its seeded named copy contains identical values. The phone was locked, so UI interactions were verified in the emulator rather than on the physical display. Snapshots and reports are under `app/out-profile-load-20261009/verification/`.
+- Live phone storage check: 29 GB available. Current serialized profile is 730 bytes; the one-profile named collection is 775 bytes before XML overhead. Named copies stay on the phone; loading replaces the controller's existing single active profile.
+
+## Firmware 1.2.10 recovery complete; wireless updates verified — October 9, 2026
+
+- Final image: `firmware/out-nvs-recovery-final-20261009/BreezeController.ino.bin`,
+  **1.2.10**, 1,600,112 bytes, 169,360 bytes of OTA-slot headroom; SHA-256
+  `FE7B50C1490030C719043D53296F05FE1681D91E5E4692C7C375F50D00E7ED54`.
+  Installed **over Wi-Fi** (`wireless-install.log`), then passed a second complete
+  1.2.10 → 1.2.10 wireless update with **USB plugged in and its serial reader
+  closed**, taking 53.2 seconds (`wireless-unread-usb-roundtrip.log`). Evidence
+  files in this paragraph and the next three are under that final build directory.
+- Fresh post-reboot desktop BLE verification confirmed firmware 1.2.10, rollback pending
+  false, learned mask 63 (`0x03f`), fan-history capability and schema 2; controller
+  telemetry/command errors were zero. See `after-unread-usb-verify.txt`.
+  D0/D1/SHT40 readings were valid; D2 remained unavailable. Fan-state synchronization
+  was still required (Logic error 21); no IR command was sent to invent an anchor
+  or test physical fan response. Recording remained stopped.
+- The post-repair 64 KiB snapshot is
+  `backups/2026-10-09-ota-nvs-recovery/boot-partition-nvs-after-repair.bin`, SHA-256
+  `A852780473DC1E10BB82ED40FE7D2A6DD512E81BAE4B11710729E305EDA67FEF`.
+  `nvs-preservation.json` verifies every meaningful metadata field and active raw
+  pulse of all six codes through version-1 → version-2 migration. All 45 committed
+  keys remain, with none missing or added: six learned blobs were compacted, 35
+  other values are unchanged, and four radio keys changed (AP SSID, password,
+  PMK information and calibration). Values and credential hashes are not printed.
+  Available NVS capacity is **281 of 504 usable entries**, with **zero orphaned
+  blob entries**. The compact record checksums pass.
+- After reading the backup and resetting, a final fresh OTA entry reached READY
+  with matching ACK result 0 (`final-ota-reentry.txt`). Normal cancellation then
+  confirmed IDLE and stopped the temporary access point (`final-ota-idle.txt`).
+  This completes the recovery's wireless upload/reboot/health-confirmation,
+  retained-code and repeated-OTA-entry checks, including the unread-USB condition.
+  No recording or physical IR action was initiated during these checks.
+- The phone was locked and dozing at the final check; its service was absent,
+  consistent with the existing 120-second background grace. An app-launch request
+  was delivered behind the lock screen. This does not establish a fresh phone
+  connection or a physical fan-button response; the controller verification
+  above was performed through the desktop BLE helper.
+
+### Initial diagnosis, 1.2.9 recovery and preflight evidence
+
+- Built `firmware/out-nvs-recovery-20261009/BreezeController.ino.bin`, version
+  **1.2.9**, 1,599,968 bytes, leaving 169,504 bytes in the existing OTA slot.
+  SHA-256: `29668CAA2766F739F83685A4CC10A69779335054A1B3E963A39B4B91097060C4`.
+  The protected `OtaUpdate.cpp`/`.h` build snapshots and `partitions.bin` are
+  byte-identical to the 1.2.7 build. The existing OTA metadata selected app0 as
+  valid. Preflight also matched the backed-up active 1.2.7 application to its
+  known binary hash. Evidence: `firmware/out-nvs-recovery-20261009/preflight.json`.
+- Installed only that application at `0x10000` over USB on COM3; the flash hash
+  was verified. The first boot logged **six migrated codes, 280 available NVS
+  entries, reserve 252, learned mask `0x03f`**, and firmware 1.2.9. The captured
+  boot has no `0x1105` calibration error. D0/D1/SHT40 readings resumed; D2 remained
+  missing. Evidence: `usb-install.log` and `usb-first-boot.txt` in the same build
+  directory. This verifies migration and retained learned-slot availability,
+  not physical IR response.
+- Fresh BLE confirmed version 1.2.9, schema 2, fan-history capability bit 5 and
+  rollback pending false. A fresh correlated OTA command reported
+  **PREPARING → READY with error 0**, and sequence 1 received ACK result 0.
+  Windows found one controller update network. Evidence:
+  `firmware/out-fan-history-20261009/verification/ota-correlated-1791575881778848200.json`.
+  The first upload attempt, `firmware/out-nvs-recovery-20261009/wireless-roundtrip.log`,
+  later timed out after 150 seconds at 28.7% with USB connected and its serial
+  reader closed.
+- A full 1.2.9 wireless transfer **passed with USB serial actively drained**.
+  `firmware/out-nvs-recovery-20261009/wireless-drained-roundtrip-retry.log`
+  records acceptance; `wireless-drained-serial.txt` in that directory records
+  100% upload, image/SHA-256 validation, reboot into 1.2.9 and successful startup
+  health confirmation/rollback cancellation. Reboot logged `migrated=0`, 281
+  available NVS entries and all six learned slots. Subsequent BLE verification
+  passed with learned mask 63 (`0x03f`). This is physical wireless-update and
+  retained-state proof under the stated serial-reader condition.
+- Source inspection found that the installed Arduino `HWCDC.write` can wait
+  about two seconds when connected USB output is full. Once-per-second sensor
+  `printf` calls consequently delayed the main loop. Attaching a read-only
+  serial drainer reduced measured AP startup from about eight seconds to 156 ms;
+  the subsequent complete upload passed. The 1.2.10 source formats sensor logs
+  into a bounded buffer and writes only when the full line fits, dropping that
+  diagnostic otherwise. Sensor acquisition and one-second cadence remain
+  unchanged; `OtaUpdate.cpp`/`.h` remain untouched.
+- The logging guard passed full/partial/exact-fit buffer cases and 20 successive
+  one-second measurements with no output space: all three probes and fault state
+  still update without extra records. The six host suites passed: session,
+  third-record, IR, 432-case first-send, Logic, and actual-backup NVS migration.
+  The final 1.2.10 build and completed unread-USB wireless update are recorded
+  above; these host checks remain distinct from that physical evidence.
+
+- The physical controller was identified on **COM3**. USB serial reported
+  `phy_init: store calibration failed (0x1105)` (`ESP_ERR_NVS_NOT_ENOUGH_SPACE`).
+  Evidence: `firmware/out-fan-history-20261009/verification/usb-initial-diagnostics.txt`,
+  line 16. This supersedes the earlier unknown-cause and USB-unavailable status.
+  The installation and successful OTA-startup results above followed this diagnosis.
+- Read-only analysis of
+  `backups/2026-10-09-ota-nvs-recovery/boot-partition-nvs-before-repair.bin`
+  found all **504 usable NVS entries occupied**, zero erased entries and one
+  empty 126-entry spare page. The snapshot SHA-256 is
+  `E2854788792F399D96DFF1D0FE58AB2C58FCB8F1150F64F1F5664CF44CB47E91`.
+  The reporter is `firmware/out-fan-history-20261009/verification/nvs-summary.py`;
+  it reports occupancy and integrity without exposing stored values.
+- Six legacy learned-code blobs are valid, each 1,576 bytes: slots 0–1 contain
+  215 active pulses each; slots 2–5 contain 191 each. They consume 314 entries,
+  plus one verified-flag entry. A valid 1,904-byte radio calibration remains,
+  alongside 64 entries belonging to four unindexed calibration chunks from an
+  incomplete replacement. No `logic-profile` or `fan-estimate` key exists in this
+  snapshot. Phone settings are separate; no claim is made that the failed
+  controller profile save had ever persisted.
+- The installed `FanRemote` repair reads both the frozen legacy format and compact
+  version 2. Compact records retain all meaningful metadata and active raw pulse
+  timings, with an exact length and FNV checksum: `36 + 2 * pulse_count` bytes,
+  or 466/418 bytes for these six records. Before BLE initialization, migration
+  validates, replaces and reads back one same-key blob at a time; it never
+  removes the old key to make room. A subsequent boot accepts mixed versions and
+  resumes migration. Normal learned writes require the new blob's conservative
+  temporary entry cost plus **252 available entries**; the internal 126-entry
+  NVS spare is excluded from that available count. The exception is only for a
+  validated replacement whose entry cost strictly shrinks.
+- `tests/ir_nvs_migration_test.py` passed against the actual six backed-up blobs,
+  comparing every active raw pulse and meaningful metadata field. Checks cover
+  a 64-entry migration start, interruption after two replacements, reboot
+  completion, idempotence, invalid versions/checksums/counts/lengths, failed
+  writes/read rejection, unrelated-key preservation and reserve rejection.
+  Existing IR tests and all 432 first-send/reconnect cases also passed. The
+  capacity model expects about 280 available entries after this snapshot's
+  migration and allows an eight-entry profile/state budget, leaving 272. This
+  is host bookkeeping, not physical flash/garbage-collection or OTA proof.
+- `partitions.csv`, OTA upload protocol, image verification and rollback
+  confirmation are unchanged. The 4 MiB flash remains divided as below; free
+  recording space or spare application space cannot satisfy a full NVS write.
+
+| Flash region | Offset | Size | Purpose |
+| --- | --- | --- | --- |
+| Bootloader, table and reserved area | `0x000000` | 36 KiB | Boot metadata |
+| NVS | `0x009000` | 20 KiB | Learned codes, settings and radio data |
+| OTA selection data | `0x00E000` | 8 KiB | Active-image selection |
+| Application slot 0 | `0x010000` | 1,728 KiB | Firmware image |
+| Application slot 1 | `0x1C0000` | 1,728 KiB | Alternate firmware image |
+| LittleFS | `0x370000` | 512 KiB | Controller recording files |
+| Core dump | `0x3F0000` | 64 KiB | Crash data |
+
+- Recording history remains separate: the last confirmed controller archive
+  base/total and phone cursor were all **40,974**, and recording was stopped.
+  The phone's checked database retained 7 sessions, 40,974 samples, 3 feelings
+  and 34 weather rows. The recovery does not resize or format LittleFS or clear
+  phone data. Available recovery files are not a complete 4 MiB flash backup.
+- **Downgrade compatibility:** firmware 1.2.8 and earlier does not read compact
+  version-2 learned records. Preserve the verified pre-repair backup for a
+  deliberate USB recovery; do not blindly boot old firmware after migration.
+  The first repair wrote the currently valid application slot over USB,
+  avoiding an initial pending-OTA rollback to a legacy reader. Future compatible
+  builds retain version-2 reads; the existing OTA confirmation lifecycle stays
+  unchanged. Both the initial recovery and final 1.2.10 wireless update with the
+  serial reader closed are verified above.
+
+## Earlier fan-setting graph deployment and blocked 1.2.8 attempt — October 9, 2026
+
+- Follow-up after the user restarted the ESP: fresh telemetry confirmed uptime 119 seconds, firmware 1.2.7, recording stopped and learned mask 0x03f. OTA entry again failed with AP_START error 9; Windows found zero Breeze update networks. No firmware was uploaded. Evidence: `firmware/out-fan-history-20261009/verification/post-restart-ota-attempt.json`.
+
+- Installed and hash-verified `app/out-fan-overlay-20261009/outputs/apk/debug/app-debug.apk`, SHA-256 `80B8909A74658F9517BF775BED84468ED0359EB7999042953FF9E13871291F2B`. Fan setting is a default-enabled stepped trace on the existing temperature/humidity plotting rectangle. The initial separate fan panel was removed following the user's correction; graph height is the original 346 dp. Temperature/humidity pixels do not move when the fan trace is toggled. Off is 0, known speeds are 1–9, Unknown is a gap, and the numeric reading remains available when unchecked.
+- The preceding fan-history app/data build passed 80 JVM tests and lint (0 errors, 26 warnings). The corrected overlay app/test assembly and lint passed; isolated emulator rendering checks passed steps/gaps, shared plot geometry, zoom clipping, historical feeling selection, defaults and numeric readouts. Visually inspected the saved combined plot at `app/out-fan-overlay-20261009/verification/fan-setting-graph-check.png`.
+- Isolated emulator database checks passed schema 5→6 migration, exact type-6/10/11 parent matching, Off/9/Unknown, duplicates/gaps/restarts, CRC checks, atomic rollback, voice-anchor mapping and twelve-column CSV. On the physical phone, backup comparison and SQLite integrity verified every original row remained: 7 sessions, 40,974 samples, 3 feelings, 34 weather rows, and the cursor. Old fan-setting values remain null. Proof and backups: `app/out-fan-history-20261009/verification`.
+- Built controller firmware 1.2.8 at `firmware/out-fan-history-20261009/BreezeController.ino.bin`: 1,597,136 bytes, 172,336 bytes OTA headroom, SHA-256 `8E75508FF193586321AF286E9719DF66DAC8739CC3005E09790EA49CDA5DF4CF`. It appends a type-11 fan-setting companion every ten seconds, alongside the existing temperature records, and advertises capability bit 5. Actual-source host tests for grouped records, session behavior, IR, Logic and 432 first-send/reconnect cases passed. This image is **not installed**: OTA entry failed with AP_START error 9 twice, including after cancel/retry. No firmware upload occurred. The controller remains on 1.2.7 with learned mask 0x03f; recording remains stopped.
+- Attempted the real-phone Home Reconnect instrumentation after installing the corrected APK. It reported SKIPPED because the phone was locked; this run is not physical reconnect proof. No recording or IR action was sent by that test. Earlier live service inspection independently confirmed fresh Bluetooth telemetry.
+- First-touch instrumentation injected actual MotionEvents after Fan→Home→Fan and after Activity pause/resume; Power, Speed+ and Speed− each dispatched the first tap once. BLE recovery instrumentation passed with a fake transport. An initial fixture crash came from its strict preference override rejecting the new diagnostic namespace; isolated trace preferences corrected that test fixture. These tests never commanded physical IR.
+- Persistent bounded diagnostics captured user taps reaching Android, successful controller acknowledgements, and send-counter increments. The user subsequently attributed the complete lack of physical response to a moved sensor/positioning and explicitly set that investigation aside. No optical-response or first-press fix is inferred from software counters, and no duplicate-send workaround was added. A later live phone check confirmed Connected, 270 ms packet age, no pending command, firmware 1.2.7 and no command error. A separate intermittent reconnect profile-persistence error 24 remained distinct from manual-send acceptance; its cause was not established at that stage. The later USB/snapshot recovery findings above confirm exhausted NVS and intact learned codes.
+
+
+## Installed app and firmware 1.2.7 — October 9, 2026
+
+- The user authorized the update. Stopped and fully downloaded the recording: controller base/total and phone cursor were all 40,974. The recording remains stopped. Before/after backups under `firmware/out-logic/deployment-20261009` preserve every existing row: 7 sessions, 40,974 samples, 34 weather rows, 2 feelings, and the cursor. SQLite schema 5 integrity check passed.
+- Installed `app/out-fan-resume-diagnostic/outputs/apk/debug/app-debug.apk`, SHA-256 `AF779191EC30709629C4D1536F4AB3A9DDC8CB504AC9E11AEA11EB0181C03CF3`, verified against the phone's installed base APK. All 77 JVM tests passed; lint reported 0 errors and 24 warnings. This includes independent Warm/Cool thresholds, autosave, explicit Save reapplication, and manual IR request/acknowledgement logging plus fan send-counter dumps. Existing D2/reconnect/current-setting changes remain included.
+- Uploaded `firmware/out-logic-independent/BreezeController.ino.bin`, version 1.2.7, 1,597,008 bytes, SHA-256 `8CB5E766E28C440A998A692580FB44DB71D219EED758538558D806FC514638D5`. The image has 172,464 bytes of OTA headroom and the expected partition table. The coordinating chat's logic, IR, session/sensor, and D2 record host checks passed; this chat also ran the final logic and IR suites successfully. Schema-1 saved rules migrate to schema 2 without inventing a separate cool threshold.
+- Live BLE after reboot confirmed version 1.2.7, rollback pending false, all six learned slots (`0x03f`), Logic/D2 capabilities, and schema 2. D0 was 34.70 C, D1 35.84 C, room 22.15 C. D2 remained unavailable. D2=GPIO2 and ADC attenuation were verified from the exact board variant/build; the physical cause of the invalid reading is not established.
+- No guessed fan anchor or physical IR command was sent during deployment. The controller reported unknown current fan state and requested synchronization (logic error 21), rather than assuming the old saved speed. The phone was dozing after deployment, so post-update onscreen verification/profile upload awaits reopening it. Read-only phone preferences retain Warm 73 F, Cool 72 F, and all three selected probes.
+- The user reproduced an ineffective first Power/Speed press after any return to the app, including quick app switches, on firmware 1.2.5. Two Speed+ presses advanced the controller estimate from 1 to 3 while the physical fan reached 2. Source audit confirms the controller increments after its transmit routine; Android does not increment the estimate locally. The optical/fan-response cause remains unresolved, and no automatic duplicate-send workaround was added. A failed press under the new diagnostic build has not yet been captured.
+
+## Warm/Cool room fields — October 9, 2026
+
+- Installed the coordinating chat's `app/out-logic-room-fields/outputs/apk/debug/app-debug.apk`, SHA-256 `53056E31C629670DE0BC76C33AE70DF6EA4294AA1EC8E5CB101B2E0B5C34137E`. Each rule now contains its editable room-temperature cutoff: Warm at or above, Cool below. The two fields mirror the shared boundary. Existing D2, current-setting and connection-readiness changes remain included.
+- All 76 JVM tests passed in this build; added lint passed with 0 errors and 24 warnings. A source review confirmed linked input/save behavior; the current Logic UI instrumentation does not specifically exercise the newly added cutoff fields. Installation preserved the ongoing controller recording. Firmware installation remains pending.
+
+## Current fan setting and first-tap readiness — October 9, 2026
+
+- Current fan setting now follows fresh synchronized controller values, including 0 for Off. An unknown/stale controller state displays Unknown instead of the old saved anchor. Focus alone no longer freezes updates; actual edits and explicit corrections remain protected through command acknowledgement and the next fan-status packet.
+- Profile upload no longer synchronizes an unknown controller from a possibly stale saved speed. Only a pending explicit user correction sends the synchronization command; automatic control otherwise waits for a known fan state.
+- Manual Power/speed buttons wait until connection setup and command transport can accept a tap. Stale telemetry/test rejection updates feedback, and reconnect clears previous success. Rejected manual commands remain unqueued and are never replayed automatically. These changes resolve observed source-level readiness/feedback problems; physical first-press reception remains unverified.
+- Installed APK: `app/out-fan-state-20261009/outputs/apk/debug/app-debug.apk`; SHA-256 `69696954B736843D3494CCA3F1A7CD509069CB35575DED2264CB0A0125A9DE3C`. App/test assembly, all 76 JVM tests, and lint passed (0 errors, 24 warnings). Pixel fake-transport checks passed startup queue/readiness, explicit-versus-stale anchors, ACK ordering, no replay, reconnect and legacy capability reset. On-device sensor/IR UI checks passed all five readings including D2, missing-D2 isolation and command readiness after updating the fake connection to remain isolated from the real reconnect lifecycle.
+- Firmware 1.2.6 was built by the coordinating fan-logic chat: `firmware/out-logic/BreezeController.ino.bin`, 1,596,368 bytes, SHA-256 `BBDD5C49BBF24EB76E66A91A71FB2AC6EE061E5AAE9B847E1D323BD48E259B9C`, 173,104 bytes below the OTA slot limit. Host checks for actual sensor functions, D2 paired-record writing, the logic engine and IR control passed. Installation remains pending permission to end the active recording; no controller restart or record stop was issued here.
+
+## D2 body probe and highest-body graph — October 9, 2026
+
+- Home now includes D2. History computes Highest body temp from D0/D1/D2 only, excludes SHT40 room temperature, and keeps the D2 individual trace unchecked by default while retaining its numeric readout. Old recordings keep missing D2 values rather than fabricating a temperature.
+- Phone schema 5 adds nullable D2 and verified companion-record identity. A type-10 record enriches its matching type-6 sample and advances the durable cursor in the same transaction. Voice entries anchored to companion records still resolve to the correct night. CSV appends `third_body_temperature_c` after the unchanged first ten columns.
+- `app/out-d2-final-20261009` app/test assembly, 70 JVM tests, and lint passed (0 errors, 26 warnings). Pixel 8 Pro instrumentation passed isolated database migration/download/rollback/CSV/voice-anchor checks and highest-body graph/rendering/defaults checks. The final capability gate additionally preserves old motor telemetry acknowledgements without interpreting speed/angle as D2.
+- The installed APK SHA-256 is `65F9C5C54A2490B6D9F6BC2056F7D4ECDED179EF0F4C87F06E00CC8DCE757C27`. Before/after database comparison preserved all 7 nights, 40,829 existing samples, 2 feeling entries, and 34 weather rows; 13 new samples arrived while testing. Schema migrated from 4 to 5 and SQLite integrity check passed.
+- Hardware D2 evidence remains pending the matching firmware installation. The controller was observed connected on v1.2.5 with an active recording; its D2 value correctly remained missing. The recording was not stopped for this update. Backups and data-preservation evidence are retained under `app/out-d2-20261009/verification`.
+
 ## Visible temperature range correction — October 7, 2026
 
 - The earlier time zoom retained whole-night temperature bounds, imposed a four-display-degree minimum, and used integer tick labels. This could flatten small changes even after zooming into a short interval.

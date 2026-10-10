@@ -12,3 +12,8 @@ app/out-sensors/
 # Generated Android and firmware build variants.
 app/out-*/
 firmware/out-*/
+
+# Local Python caches and device recovery state (includes radio credentials).
+__pycache__/
+*.py[cod]
+/backups/2026-10-09-ota-nvs-recovery/

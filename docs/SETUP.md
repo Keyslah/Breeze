@@ -10,18 +10,22 @@
 | --- | --- | --- |
 | Existing body thermistor divider | D0 | 0 |
 | Second body thermistor divider | D1 | 1 |
+| Third body thermistor divider | D2 | 2 |
 | Existing SHT40 SDA | D4 | 22 |
 | Existing SHT40 SCL | D5 | 23 |
 | TSOP38238 OUT | D6 | 16 |
 | IR transistor base through 1 kΩ | D7 | 17 |
 
-Pins are centralized in `firmware/BreezeController/Pins.h`. The assignments match the [Seeed XIAO ESP32C6 pin map](https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/). D6/D7 are used for IR, not Serial1. Serial diagnostics use USB at 115200 baud.
+Pins are centralized in `firmware/BreezeController/Pins.h`. The assignments match the [Seeed XIAO ESP32C6 pin map](https://wiki.seeedstudio.com/xiao_esp32c6_getting_started/). D2 = GPIO2 is also verified in the installed build toolchain's `.arduino-dreo/data/packages/esp32/hardware/esp32/3.3.12/variants/XIAO_ESP32C6/pins_arduino.h`, selected by `firmware/arduino-dreo.yaml` and `firmware/build-ota.ps1`. D6/D7 are used for IR, not Serial1. Serial diagnostics use USB at 115200 baud.
 
 ```text
 3V3 -- 10 kΩ --+-- D0       Existing divider
               +-- body thermistor -- GND
 
 3V3 -- 10 kΩ --+-- D1       Separate second divider
+              +-- body thermistor -- GND
+
+3V3 -- 10 kΩ --+-- D2       Separate third divider
               +-- body thermistor -- GND
 
 SHT40: VCC -> 3V3; GND -> GND; SDA -> D4; SCL -> D5
@@ -39,23 +43,25 @@ Use the numbered package drawing in the [Vishay TSOP38238 datasheet](https://www
 
 The [TSAL6200 datasheet](https://www.vishay.com/docs/81010/tsal6200.pdf) identifies LED polarity. Verify collector/base/emitter using the datasheet for the **actual transistor package**: “2N2222” alone is insufficient to determine physical lead order. No package-specific lead order is assumed here. A 10 kΩ base-to-emitter pull-down is an optional addition to keep the transistor off while the ESP pin floats during reset. Keep the existing 47 Ω LED resistor; the LED is powered through the transistor, never directly from a GPIO. This diagram assumes USB-powered VBUS; it has not been physically inspected.
 
-The original 3.3 V, 10 kΩ series resistor, 10 kΩ NTC, B3950 and zero-offset conversion is preserved. D1 uses the same conversion with a separate zero offset. “MF55 10K” alone does not establish its beta value; confirm the actual probe specification and compare the two probes together before interpreting differences. No calibration values were invented or tuned.
+The original 3.3 V, 10 kΩ series resistor, 10 kΩ NTC, B3950 and zero-offset conversion is preserved. D1 and D2 use the same conversion, each with its own divider. “MF55 10K” alone does not establish its beta value; confirm the actual probe specification and compare the three probes together before interpreting differences. No calibration values were invented or tuned.
 
 ## Home recording and graphs
 
-Start recording stays at the bottom of Home, directly below humidity, and switches to Stop recording during a session. Voice controls and the saved-feelings shortcut are on Setup; recording is controlled from Home. Temperature colors: D0 green, D1 coral, SHT40 gold, outdoors blue (dashed). Humidity colors: SHT40 purple, outdoors cyan (dashed). History combines all temperature and humidity traces on one graph: temperature on the right axis, humidity on the left (0–100%). Each large readout has its own colored checkbox to show/hide that graph line while keeping the reading visible, and the app remembers those choices. Open History → Choose recorded night → tap a date to load its graph. The list explicitly shows how many nights are saved, including when there is only one. Old sessions retain their original sampling cadence and have no fabricated D1 readings.
+Home needs no scrolling. Its top half shows D0, D1, D2, Highest body temp, SHT40 room temperature and humidity using History's readout style, without checkboxes. Its bottom half contains Power, Speed +, Speed -, Mode, Horizontal, Vertical, Logic, Start recording, Reconnect and Current fan setting. Start recording changes to Stop recording during a session. Logic is blue when confirmed active and purple when paused. Voice controls and the saved-feelings shortcut remain on Setup. Temperature colors: D0 green, D1 coral, D2 lavender, highest body orange, SHT40 gold, outdoors blue (dashed). Humidity colors: SHT40 purple, outdoors cyan (dashed). History combines all temperature and humidity traces on one graph: temperature on the right axis, humidity on the left (0–100%). **Highest body temp** uses the highest available D0/D1/D2 reading at each recorded timestamp; room temperature never contributes. Highest starts enabled, while the three individual body traces start unchecked. Each History readout has its own colored checkbox to show/hide that graph line while keeping the reading visible, and the app remembers those choices. Open History → Choose recorded night → tap a date to load its graph. The list explicitly shows how many nights are saved, including when there is only one. Old sessions retain their original sampling cadence and have no fabricated D1 or D2 readings; their highest line uses whichever body readings were actually recorded.
+
+**Fan setting** appears as a stepped line on that same graph and starts checked. Its fixed 0–9 scale is independent of temperature and humidity, with 0 meaning Off. Unchecking it keeps the numerical reading available. Installed firmware 1.2.10 includes the sampled fan-setting estimate in new recordings every ten seconds; unknown or older readings remain Unknown. It also preserves radio storage headroom and has passed a complete wireless update with the USB reader closed. No historical fan setting is reconstructed from old motor fields.
 
 ## Collect the probe test first
 
 1. Connect the updated controller in Setup. Stop any current recording before starting a separate experiment.
 2. Open Fan and scroll to **Probe contact test**. Tap **Start probe test** to begin baseline recording.
 3. Lie on the probes and tap **Mark: lying on probes**. Let the readings settle while recording continues.
-4. Get off and tap **Mark: off probes**. Keep recording while both probes cool. Repeat the lying/off markers if useful.
-5. Tap **Stop probe test**, download, and open History. The separate D0/D1 curves have user event markers; export CSV to examine exact samples.
+4. Get off and tap **Mark: off probes**. Keep recording while the three probes cool. Repeat the lying/off markers if useful.
+5. Tap **Stop probe test**, download, and open History. Enable the separate D0/D1/D2 curves to compare them alongside the user event markers; export CSV to examine exact samples.
 
-Both body probes and the SHT40 temperature/humidity sample every 10 seconds. Outdoor weather remains hourly modeled data. A marker also takes an immediate body sample. No contact detector, sudden-drop rejection, recovery threshold, inferred valid-contact range, or temperature-driven IR transmission is applied. A quick change between regular samples will only be localized to that sampling interval. Existing electrical/conversion fault checks remain; an unavailable probe shows a missing reading, not an invented temperature.
+Regular durable history samples include all three body probes and the SHT40 temperature/humidity every 10 seconds. The firmware also refreshes body readings once per second for control; this does not change the regular graph-recording cadence. Outdoor weather remains hourly modeled data. A marker also takes an immediate body sample. No contact detector, sudden-drop rejection, recovery threshold, inferred valid-contact range, or temperature-driven IR transmission is applied. A quick change between regular history samples will only be localized to that recording interval. Existing electrical/conversion fault checks remain; an unavailable probe shows a missing reading, not an invented temperature.
 
-The firmware records locally without the phone after Start. The phone durably saves each record before acknowledging its retirement. Old sessions remain readable. CSV stores Celsius internally plus a second-probe column and test phase; the app displays Fahrenheit.
+The firmware records locally without the phone after Start. Each unchanged 20-byte type-6 record is followed by a 20-byte type-10 D2 companion. The phone merges the companion into the same recorded sample and durably advances its cursor before acknowledging retirement. Old sessions remain readable. CSV keeps its existing ten columns and appends `third_body_temperature_c` as column 11; D2 is blank for older rows that lack it. CSV temperatures remain Celsius; the app displays Fahrenheit.
 
 ## Learn and verify manual IR
 
@@ -64,12 +70,20 @@ The firmware records locally without the phone after Start. The phone durably sa
 3. Reboot the ESP32 and reconnect. Confirm Power still shows Learned.
 4. Aim the transmitter at the fan and tap **Test** for Power. Personally observe the fan's response; a transmit count only proves software attempted a send.
 5. Learn/test Speed + and Speed -, then Mode, Horizontal and Vertical. Six Extra slots are available for other buttons. Relearn replaces a slot after a new capture is saved; Cancel ends waiting; Clear erases the selected slot.
-6. Verify both raw thermistors and unchanged SHT40 readings, then test the app's manual controls.
+6. Verify all three raw thermistors and unchanged SHT40 readings, then test the app's manual controls.
 7. Set the physical fan ON in Normal/manual mode and a known speed. Open **Sync / set current speed**, select that observed speed, and confirm the mode. The 1–9 targets now issue spaced relative steps from this estimate. First verify that the learned +/- buttons actually change exactly one speed per press.
 
-There is no fan feedback. Missed IR commands can invalidate the estimate. Re-sync after fan power loss, physical buttons, original-remote use, or unexpected response. Observed external IR invalidates the estimate conservatively; remote use outside receiver range cannot be detected. Power, Mode and Extra commands invalidate the estimate. Manual +/- at an estimated endpoint also invalidates it because actual wrap/clamp behavior is unknown. Reboot starts with unknown speed. Disconnect cancels an unfinished target or learning operation. No command transmits on boot.
+There is no physical fan feedback. Missed IR commands can invalidate the estimate. Correct it after fan power loss, physical buttons, original-remote use, or unexpected response. Observed external IR invalidates the estimate conservatively; remote use outside receiver range cannot be detected. Known Power changes track Off and the retained speed; Mode and Extra commands invalidate the estimate. Reboot restores a valid saved estimate; otherwise it waits for explicit synchronization. Disconnect cancels unfinished manual target or learning work while automatic rules continue.
 
-**Automatic control remains unavailable.** We will define it only after inspecting the probe experiment. There are no adjustable automatic temperature parameters yet, and attempts to enable auto return “rules not defined.”
+## Automatic fan logic
+
+**Logic** is the first section on Setup. Its renameable `default` profile starts with automatic control enabled. Valid edits save automatically after a short pause, on Done, or when leaving Setup; the top and bottom labels show **Saving**, **Saved**, or **Not saved** with the reason. **Save profile** and **Load profile** sit beside each other at both ends. Enter a name and use **Save profile** to keep a named copy on the phone; saving the same name updates that copy. **Load profile** lists those names and restores the selected settings. Automatic edits update the active settings without replacing named copies. The first app upgrade preserves the existing active profile as a named copy. Save and Load apply the active rules again, resuming automatic control after a manual override; an offline selection applies when the controller reconnects. The ESP stores only the single active profile, so additional named copies do not consume its recording storage.
+
+Warm room and Cool room each have their own editable room-temperature threshold. Warm applies at or above its threshold; Cool applies below its threshold. Between them, the controller holds the current estimated fan setting and cancels an unfinished ramp or boost. The cool threshold must be at or below the warm threshold. Both default to 71°F, leaving no gap until edited.
+
+The body input is the highest valid selected D0/D1/D2 reading at each sample, averaged over an editable window (default 60 seconds). Warm defaults to minimum speed 3, with another level per completed 0.4°F above 98°F. Cool defaults to Off below 98°F and starting speed 1 above it, with the same 0.4°F steps. Each rule has an independent optional sudden-warming boost, with editable extra levels, rise trigger/window, rise/hold/return times and Smooth or Linear curve. Normal full-range transitions default to 10 seconds up and 5 seconds down; both are editable.
+
+On Home, **Current fan setting** beside Reconnect shows the current or last estimate; 0 means Off and the initial display defaults to 1. Correct it when physical buttons or the original remote change the fan, then press the keyboard's **Done**. An unknown controller estimate needs explicit confirmation before automatic commands can run; the displayed default never establishes a physical setting by itself. App-controlled changes update the field. A fan-button tap sends its command first; any edited-setting correction follows after acknowledgement and reflects that command's resulting setting. Unknown effects retain the text for explicit confirmation. Accepted manual app commands pause automatic control. Tap **Logic** to resume or pause; setting corrections do not override a pause. Explicit **Save profile** / **Load profile** also resume the chosen rules. The controller runs the saved rules independently of the phone connection. IR acknowledgements do not prove physical fan response.
 
 Learned signals live in the ESP32 Preferences namespace `breeze-ir`; raw timing data is retained even for decoded captures. The implementation bounds capture size (768 timing entries) and reports storage/capture failure rather than claiming every possible signal can be replayed. Available NVS space can limit the number of slots. The actual Dreo protocol, carrier, frame/repeat behavior, transistor circuit, range and reliable single-step response still require hardware testing. Serial prints decoded protocol/address/command, raw timings, saved slots, sends, sensor samples and received app commands.
 

@@ -6,6 +6,7 @@ import re
 
 root = Path(__file__).resolve().parents[1]
 firmware_source = (root/'firmware/BreezeController/BreezeController.ino').read_text(encoding='utf-8')
+legacy_fixture = (root/'firmware/out-logic/sketch/LogicControl.h').read_text(encoding='utf-8').replace('namespace BreezeLogic {','namespace BreezeLogicV1 {')
 def firmware_function(name):
     start = re.search(r'void ' + name + r'\([^;{}]*\)\s*\{', firmware_source).start()
     opening = firmware_source.index('{', start)
@@ -26,7 +27,7 @@ stub = r'''
 #include <cassert>
 using String=std::string;
 #define String(x) std::to_string(x)
-constexpr int D0=0,D1=1,D4=22,D5=23,D6=16,D7=17;
+constexpr int D0=0,D1=1,D2=2,D4=22,D5=23,D6=16,D7=17;
 constexpr int HIGH=1,LOW=0,INPUT=0,kRawTick=2;
 inline void pinMode(int,int){}
 inline int digitalRead(int){return HIGH;}
@@ -34,7 +35,7 @@ inline uint32_t clockMs=100;
 inline uint32_t millis(){return clockMs;}
 struct SerialFake{template<class...T>void printf(const char*,T...){} template<class T>void println(T){}};
 inline SerialFake Serial;
-enum decode_type_t{UNKNOWN=-1,NEC=1,RC5=2,RC6=3};
+enum decode_type_t{UNKNOWN=-1,NEC=1,RC5=2,RC6=3,SYMPHONY=76};
 #define _IRREMOTEESP8266_VERSION_STR "test-spy"
 struct decode_results{bool overflow=false,repeat=false;uint16_t rawlen=13,bits=32;decode_type_t decode_type=NEC;uint64_t value=123;uint32_t address=3,command=4;uint16_t*rawbuf=nullptr;};
 inline bool pending=false,sendSupported=true,failStorage=false;
@@ -58,6 +59,9 @@ class Preferences{public:
  size_t putBytes(const char*k,const void*p,size_t n){nvsWrites++;if(failStorage)return 0;const auto*b=(const uint8_t*)p;saved[k]=std::vector<uint8_t>(b,b+n);return n;}
  bool remove(const char*k){nvsRemoves++;return saved.erase(k)>0;}
 };
+constexpr int ESP_OK=0;
+struct nvs_stats_t {size_t used_entries=0,free_entries=500,available_entries=500,total_entries=630,namespace_count=1;};
+inline int nvs_get_stats(const char*,nvs_stats_t* result){*result=nvs_stats_t{};return ESP_OK;}
 class IRrecv{public:IRrecv(int,int,int,bool){}void enableIRIn(bool=false){receiverEnabled=true;receiverEnables++;}void disableIRIn(){receiverEnabled=false;receiverDisables++;}void setUnknownThreshold(int){}void resume(){pending=false;}
  bool decode(decode_results* r){if(receiverEnabled&&scheduledCapture&&int32_t(clockMs-captureAt)>=0){nextCapture=loopbackCapture;pending=true;scheduledCapture=false;}if(!receiverEnabled||!pending)return false;*r=nextCapture;return true;}
 };
@@ -82,6 +86,7 @@ inline uint16_t* resultToRawArray(decode_results* r){auto*p=new uint16_t[r->rawl
 '''
 harness = r'''
 #include "FanRemote.cpp"
+#include "legacy_logic_fixture.h"
 // Hardware/session boundaries around the actual firmware process() function.
 FanRemote fan;Preferences prefs;
 bool active=false,mounted=false,storageOK=true,streaming=false,synced=false;
@@ -105,6 +110,18 @@ std::vector<uint8_t> optical(FanRemote& f){std::vector<uint8_t>b(20);f.receiverT
 std::vector<uint8_t> input(FanRemote& f){std::vector<uint8_t>b(20);f.receiverInputPacket(b.data());return b;}
 uint16_t read16(const std::vector<uint8_t>&b,int offset){return b[offset]|uint16_t(b[offset+1])<<8;}
 uint64_t read64(const std::vector<uint8_t>&b,int offset){uint64_t n=0;for(int i=0;i<8;i++)n|=uint64_t(b[offset+i])<<(i*8);return n;}
+std::map<std::string,std::vector<uint8_t>> learnedRecords(){std::map<std::string,std::vector<uint8_t>> out;for(const auto& item:saved)if(item.first.rfind("ir",0)==0)out.insert(item);return out;}
+std::vector<uint8_t> logicState(FanRemote& f){std::vector<uint8_t>b(20);f.logicStatusPacket(b.data(),clockMs);return b;}
+void field16(uint8_t* b,int offset,int value){b[offset]=value;b[offset+1]=value>>8;}
+float celsius(float f){return (f-32)/1.8f;}
+void runtimeTick(FanRemote& f,int advance,float bodyF,float roomF,float d2F=NAN){clockMs+=advance;f.tick(celsius(bodyF),celsius(bodyF-1),celsius(roomF),clockMs,celsius(d2F));}
+int submitProfile(FanRemote& f,const BreezeLogic::Profile& p,bool commit=true){
+ uint8_t b[20]={1,6};b[4]=13;b[5]=p.probeMask;field16(b,6,p.roomCentiF);field16(b,8,p.averageSeconds);field16(b,10,p.riseSeconds);field16(b,12,p.fallSeconds);b[14]=p.maximum;b[15]=2;field16(b,16,p.coolRoomCentiF);assert(f.command(b)==0);
+ for(int i=0;i<2;i++){memset(b+4,0,16);const auto&r=p.rules[i];b[4]=14;b[5]=i;field16(b,6,r.bodyCentiF);field16(b,8,r.stepCentiF);b[10]=r.minimum;b[11]=r.offBelow;b[12]=1;assert(f.command(b)==0);
+  memset(b+4,0,16);const auto&t=r.boost;b[4]=15;b[5]=i;b[6]=t.enabled;b[7]=t.extra;field16(b,8,t.triggerCentiF);field16(b,10,t.windowSeconds);field16(b,12,t.riseSeconds);field16(b,14,t.holdSeconds);field16(b,16,t.returnSeconds);b[18]=t.curve;b[19]=1;assert(f.command(b)==0);
+ }
+ return commit?action(f,16):0;
+}
 void runOptical(FanRemote& f,int mode,int matches,int frames,int overflows=0){
  loopbackMode=mode;pending=scheduledCapture=false;int count=rawTransmissions,writes=nvsWrites,removes=nvsRemoves,disables=receiverDisables;
  auto stored=saved;auto before=status(f);assert(action(f,12)==0);auto b=optical(f);
@@ -134,14 +151,15 @@ void runOptical(FanRemote& f,int mode,int matches,int frames,int overflows=0){
 }
 int main(){
  FanRemote f;f.begin();assert(transmissions==0&&status(f)[4]==0);
- assert(action(f,4,0)==20&&action(f,5,4)==21&&action(f,7,1)==30);assert(transmissions==0);
+ assert(action(f,4,0)==20&&action(f,5,4)==21&&action(f,7,1)==0);assert(transmissions==0);
  learn(f,0);learn(f,1);learn(f,2);assert((status(f)[8]&7)==7);
  FanRemote reboot;reboot.begin();assert((status(reboot)[8]&7)==7&&status(reboot)[4]==0);assert(action(reboot,4,0)==0&&transmissions==1);
  assert(action(reboot,4,0)==0&&transmissions==2); // A second explicit manual tap has no artificial 450ms delay.
  tick(reboot);sendSupported=false;assert(action(reboot,4,0)==0&&rawTransmissions==1);sendSupported=true;
- tick(reboot);assert(action(reboot,6,4,1)==0);assert(action(reboot,5,6)==0);tick(reboot);assert(status(reboot)[4]==5);tick(reboot);assert(status(reboot)[4]==6&&status(reboot)[5]==0);
- int count=transmissions;for(int i=0;i<200;i++){tick(reboot);assert(action(reboot,7,1)==30);}assert(transmissions==count); // Temperature never drives IR.
- assert(action(reboot,6,9,1)==0);assert(action(reboot,4,1)==0);assert(status(reboot)[4]==0); // Endpoint may wrap; never pretend clamping.
+ tick(reboot);assert(action(reboot,6,4,1)==0);assert(action(reboot,5,6)==0);tick(reboot);assert(status(reboot)[4]==5);tick(reboot,1000);assert(status(reboot)[4]==6&&status(reboot)[5]==0);
+ int count=transmissions;assert(action(reboot,7,0)==0);for(int i=0;i<200;i++)tick(reboot);assert(transmissions==count); // Paused automation never drives IR.
+ assert(action(reboot,6,9,1)==0);assert(action(reboot,4,1)==0);assert(status(reboot)[4]==10&&reboot.recordedSetting()==10); // 9 advances to H; its duplicate does not advance twice.
+ count=transmissions;tick(reboot,299);assert(transmissions==count&&status(reboot)[4]==10);tick(reboot,1);assert(transmissions==count+1&&status(reboot)[4]==10);
  tick(reboot);assert(action(reboot,6,3,1)==0);pending=true;nextCapture={};tick(reboot);assert(status(reboot)[4]==0&&status(reboot)[10]==29);
  assert(action(reboot,1,0,38)==0);nextCapture.repeat=true;pending=true;tick(reboot);assert(status(reboot)[7]==1);
  nextCapture.repeat=false;nextCapture.overflow=true;pending=true;tick(reboot);assert(status(reboot)[7]==1);
@@ -181,7 +199,7 @@ int main(){
  assert(action(diagnostic,12)==0);diagnostic.disconnected();assert(optical(diagnostic)[1]==4);tick(diagnostic,6000);assert(transmissions==count);
  assert(action(diagnostic,12)==0);tick(diagnostic,5000);assert(optical(diagnostic)[2]==1);diagnostic.disconnected();tick(diagnostic,5000);assert(transmissions==count+1&&optical(diagnostic)[1]==4);
  assert(nvsWrites==writes&&nvsRemoves==removes);
- saved.clear();pending=scheduledCapture=false;FanRemote monitor;monitor.begin();auto empty=input(monitor);
+ saved.clear();clockMs=100;pending=scheduledCapture=false;FanRemote monitor;monitor.begin();auto empty=input(monitor);
  assert(empty[0]==8&&empty[19]==1&&empty[1]==0&&empty[2]==255&&read16(empty,4)==65535&&read16(empty,6)==0);
  assert(action(monitor,1,0,38)==0);nextCapture={};nextCapture.value=0x20DFA35C;pending=true;tick(monitor);assert(status(monitor)[7]==2);
  assert(action(monitor,1,1,38)==0);nextCapture={};nextCapture.value=0x20DF03FC;pending=true;tick(monitor);assert(status(monitor)[7]==2);
@@ -190,11 +208,12 @@ int main(){
  assert(own[1]==3&&own[2]==0&&own[3]==32&&read16(own,4)==NEC&&read64(own,8)==0x20DFA35C&&read16(own,16)==13);
  assert(receiverEnabled&&receiverDisables==monitorDisables&&nvsWrites==writes&&nvsRemoves==removes&&saved==monitorStored);
  tick(monitor);assert(action(monitor,6,4,1)==0);assert(action(monitor,4,1)==0);
+ writes=nvsWrites;monitorStored=saved;auto learnedBeforeFeedback=learnedRecords();
  nextCapture={};nextCapture.value=0x20DF03FC;pending=true;tick(monitor,20);own=input(monitor);
  assert(own[1]==3&&own[2]==1&&status(monitor)[4]==5&&(status(monitor)[1]&4)); // Own feedback must not invalidate its estimate.
  int ownSequence=read16(own,6);tick(monitor);nextCapture={};nextCapture.value=0x20DF03FC;pending=true;tick(monitor,10);auto external=input(monitor);
  assert(external[1]==1&&external[2]==1&&read16(external,6)==ownSequence+1&&status(monitor)[4]==0&&status(monitor)[10]==29);
- assert(nvsWrites==writes&&nvsRemoves==removes&&saved==monitorStored);
+ assert(nvsWrites==writes+1&&nvsRemoves==removes&&learnedRecords()==learnedBeforeFeedback); // External use persists uncertain estimate without modifying learned buttons.
  assert(action(monitor,1,3,38)==0);pulse=900;nextCapture={};nextCapture.decode_type=UNKNOWN;nextCapture.bits=0;pending=true;tick(monitor);assert(status(monitor)[7]==2);pulse=600;
  writes=nvsWrites;removes=nvsRemoves;monitorStored=saved;tick(monitor);loopbackMode=1;
  assert(action(monitor,4,3)==0);tick(monitor,20);auto rawOwn=input(monitor);
@@ -211,22 +230,89 @@ int main(){
  assert(action(monitor,4,1)==0&&transmissions==beforeImmediate+3&&status(monitor)[4]==7);
  tick(monitor,1000);assert(transmissions==beforeImmediate+3&&status(monitor)[5]==0); // Canceled target cannot execute delayed steps.
  runOptical(monitor,1,3,3); // Diagnostics are explicitly flagged and never shown as a learned button.
- fan.begin();count=transmissions;writes=nvsWrites;removes=nvsRemoves;
+ clockMs=100;fan.begin();count=transmissions;writes=nvsWrites;removes=nvsRemoves;
  uint8_t powerPacket[20]={1,6};powerPacket[2]=200;powerPacket[4]=4;
- process(powerPacket,7);assert(transmissions==count+1&&ack==200&&commandError==0);
- process(powerPacket,7);assert(transmissions==count+1&&ack==200&&commandError==0); // ACK retry never replays a Power toggle.
+ process(powerPacket,7);assert(transmissions==count+1&&ack==200&&commandError==0&&status(fan)[4]==0);
+ process(powerPacket,7);assert(transmissions==count+1&&ack==200&&commandError==0&&status(fan)[4]==0); // ACK retry never replays a Power toggle.
  powerPacket[5]=1;process(powerPacket,7);assert(transmissions==count+1&&commandError==1); // Same sequence with changed payload also never sends.
- powerPacket[5]=0;powerPacket[2]=201;process(powerPacket,7);assert(transmissions==count+2&&commandError==0); // A new tap sends immediately.
+ powerPacket[5]=0;powerPacket[2]=201;process(powerPacket,7);assert(transmissions==count+2&&commandError==0&&status(fan)[4]==7); // A new tap sends immediately and restores the retained speed.
  process(powerPacket,7);assert(transmissions==count+2&&commandError==0);
  process(powerPacket,8);assert(transmissions==count+3&&commandError==0); // A new BLE connection owns a new sequence namespace.
- assert(nvsWrites==writes&&nvsRemoves==removes);
- puts("PASS: actual firmware command deduplication; immediate manual taps, preserved target pacing and target cancellation; IR learning/storage/sends and optical/receiver regression coverage");
+ assert(nvsWrites==writes+3&&nvsRemoves==removes);
+ // Exercise real controller automation, atomic profile upload and restart semantics.
+ saved.clear();clockMs=100;pending=scheduledCapture=false;loopbackMode=0;FanRemote controlled;controlled.begin();count=transmissions;
+ assert((logicState(controlled)[1]&1)&&logicState(controlled)[13]==7);
+ runtimeTick(controlled,1000,98,72);assert(transmissions==count&&logicState(controlled)[12]==20); // Enabled with missing codes remains quiet.
+ learn(controlled,0);learn(controlled,1);learn(controlled,2);auto immutableCodes=learnedRecords();
+ BreezeLogic::Profile p;p.averageSeconds=1;uint8_t globalOnly[20]={1,6};globalOnly[4]=13;globalOnly[5]=7;field16(globalOnly,6,7100);field16(globalOnly,8,1);field16(globalOnly,10,10);field16(globalOnly,12,5);globalOnly[14]=9;globalOnly[15]=1;
+ assert(controlled.command(globalOnly)==0&&action(controlled,16)==26);runtimeTick(controlled,1000,98,72);assert(transmissions==count&&!(logicState(controlled)[1]&1));
+ assert(submitProfile(controlled,p,false)==0);failStorage=true;assert(action(controlled,16)==24);failStorage=false;
+ assert(read16(logicState(controlled),10)==1&&!(logicState(controlled)[1]&1)&&learnedRecords()==immutableCodes);
+ assert(action(controlled,16)==0&&read16(logicState(controlled),10)==2&&(logicState(controlled)[1]&1));
+ runtimeTick(controlled,1,98,72);assert(transmissions==count&&logicState(controlled)[12]==21); // No startup Power toggle while state is unknown.
+ assert(action(controlled,6,1,1)==0);runtimeTick(controlled,1,98,72);runtimeTick(controlled,1249,98,72);assert(transmissions==count);
+ runtimeTick(controlled,1,98,72);assert(status(controlled)[4]==2&&transmissions==count+1);runtimeTick(controlled,1250,98,72);assert(status(controlled)[4]==3&&transmissions==count+2);
+ assert(action(controlled,6,1,1)==0);runtimeTick(controlled,1000,102,72);count=transmissions;
+ for(int i=1;i<=8;i++){runtimeTick(controlled,1250,102,72);assert(status(controlled)[4]==1+i&&transmissions==count+i);} // Eight steps span ten seconds.
+ controlled.disconnected();assert(logicState(controlled)[1]&1);runtimeTick(controlled,1000,97,70);count=transmissions;
+ for(int i=1;i<=8;i++){runtimeTick(controlled,1000,97,70);assert(status(controlled)[4]==9-i&&transmissions==count+i);} // Automatic levels respect the one-second minimum before OFF.
+ runtimeTick(controlled,999,97,70);assert(status(controlled)[4]==1);runtimeTick(controlled,1,97,70);assert(status(controlled)[4]==0&&transmissions==count+9&&(status(controlled)[1]&4));
+ FanRemote offReboot;offReboot.begin();assert(status(offReboot)[4]==0&&(status(offReboot)[1]&4)&&(logicState(offReboot)[1]&1));
+ count=transmissions;runtimeTick(offReboot,1000,98,72);assert(status(offReboot)[4]==1&&transmissions==count+1);runtimeTick(offReboot,1,98,72);
+ runtimeTick(offReboot,1250,98,72);assert(status(offReboot)[4]==2);runtimeTick(offReboot,1250,98,72);assert(status(offReboot)[4]==3); // Restart at retained1, then ramp.
+ assert(action(offReboot,6,1,1)==0);runtimeTick(offReboot,1000,NAN,72);assert(logicState(offReboot)[3]==3&&(logicState(offReboot)[1]&16));
+ runtimeTick(offReboot,1250,NAN,72);runtimeTick(offReboot,1250,NAN,72);assert(status(offReboot)[4]==3);count=transmissions;
+ runtimeTick(offReboot,1000,NAN,70);runtimeTick(offReboot,2000,NAN,70);assert(status(offReboot)[4]==3&&transmissions==count); // Missing body in cold room holds physical state.
+ assert(action(offReboot,4,0)==0&&status(offReboot)[4]==0&&!(logicState(offReboot)[1]&1));count=transmissions;runtimeTick(offReboot,10000,102,72);assert(transmissions==count);
+ assert(action(offReboot,4,0)==0&&status(offReboot)[4]==3);assert(action(offReboot,7,1)==0);runtimeTick(offReboot,1000,98,72,100);
+ assert(status(offReboot)[11]==3&&logicState(offReboot)[3]==8&&(logicState(offReboot)[1]&32)); // D2 participates in warmest sampling.
+ auto beforeSame=logicState(offReboot);writes=nvsWrites;assert(submitProfile(offReboot,p)==0);auto afterSame=logicState(offReboot);
+ assert(nvsWrites==writes&&read16(afterSame,10)==read16(beforeSame,10)&&read16(afterSame,4)==read16(beforeSame,4)&&!(afterSame[1]&16));
+ p.rules[0].minimum=4;assert(submitProfile(offReboot,p)==0&&read16(logicState(offReboot),4)==read16(beforeSame,4)); // Editing rules preserves current minute samples.
+ assert(action(offReboot,5,7)==0);assert(action(offReboot,6,2,1)==0&&status(offReboot)[4]==2&&status(offReboot)[5]==0); // Correction replaces a manual target immediately.
+ BreezeLogic::Profile boosted=p;boosted.rules[0].minimum=3;boosted.rules[0].bodyCentiF=10500;boosted.rules[0].boost.enabled=1;boosted.rules[0].boost.windowSeconds=1;boosted.rules[0].boost.holdSeconds=5;
+ assert(submitProfile(offReboot,boosted)==0);assert(action(offReboot,6,3,1)==0);runtimeTick(offReboot,1000,98,72);runtimeTick(offReboot,1000,99,72);runtimeTick(offReboot,2000,99,72);
+ auto boosting=logicState(offReboot);assert(boosting[1]&2);writes=nvsWrites;assert(submitProfile(offReboot,boosted)==0);auto sameBoost=logicState(offReboot);
+ assert((sameBoost[1]&2)&&read16(sameBoost,8)==read16(boosting,8)&&read16(sameBoost,10)==read16(boosting,10)&&nvsWrites==writes);
+ FanRemote knownReboot;knownReboot.begin();assert(status(knownReboot)[4]==status(offReboot)[4]&&(status(knownReboot)[1]&4)&&(logicState(knownReboot)[1]&1));
+ assert(read16(logicState(knownReboot),10)==read16(sameBoost,10)&&learnedRecords()==immutableCodes);
+ // Independent warm/cold room thresholds hold the actual current level in their gap.
+ BreezeLogic::Profile independent=p;independent.roomCentiF=7200;independent.coolRoomCentiF=7000;
+ assert(submitProfile(knownReboot,independent)==0);assert(action(knownReboot,6,1,1)==0);
+ runtimeTick(knownReboot,1000,102,72);count=transmissions;runtimeTick(knownReboot,1250,102,72);assert(status(knownReboot)[4]==2&&transmissions==count+1);
+ runtimeTick(knownReboot,1000,102,71.9);auto held=logicState(knownReboot);count=transmissions;
+ assert(held[2]==255&&held[3]==2);runtimeTick(knownReboot,10000,102,71);assert(status(knownReboot)[4]==2&&transmissions==count); // Old rise cannot finish while holding.
+ runtimeTick(knownReboot,1000,97,70);assert(logicState(knownReboot)[2]==255&&logicState(knownReboot)[3]==2&&transmissions==count);
+ runtimeTick(knownReboot,1000,97,69.9);assert(logicState(knownReboot)[2]==1&&logicState(knownReboot)[3]==0);runtimeTick(knownReboot,1000,97,69.9);assert(status(knownReboot)[4]==1);
+ runtimeTick(knownReboot,100,97,70);count=transmissions;runtimeTick(knownReboot,1000,97,70);assert(status(knownReboot)[4]==1&&transmissions==count); // Gap also cancels pending OFF.
+ BreezeLogic::Profile overlapping=independent;overlapping.coolRoomCentiF=7300;assert(submitProfile(knownReboot,overlapping)==26);
+ FanRemote independentReboot;independentReboot.begin();assert(read16(logicState(independentReboot),10)==read16(logicState(knownReboot),10));count=transmissions;runtimeTick(independentReboot,1000,102,71);
+ assert(logicState(independentReboot)[2]==255&&logicState(independentReboot)[3]==1&&transmissions==count); // Independent thresholds survive NVS reload.
+ // Construct a real schema 1 blob using its actual 1.2.6 compiled header snapshot.
+ static_assert(sizeof(BreezeLogicV1::Profile)==64&&offsetof(BreezeLogicV1::Profile,checksum)==60,"Fixture must retain the actual old layout");
+ BreezeLogicV1::Profile legacy;legacy.revision=27;legacy.probeMask=5;legacy.maximum=8;legacy.roomCentiF=7325;legacy.averageSeconds=45;legacy.riseSeconds=8;legacy.fallSeconds=4;
+ legacy.rules[0].bodyCentiF=9760;legacy.rules[0].stepCentiF=35;legacy.rules[0].minimum=4;legacy.rules[0].boost.enabled=1;legacy.rules[0].boost.extra=3;legacy.rules[0].boost.triggerCentiF=75;legacy.rules[0].boost.windowSeconds=20;legacy.rules[0].boost.riseSeconds=4;legacy.rules[0].boost.holdSeconds=90;legacy.rules[0].boost.returnSeconds=8;legacy.rules[0].boost.curve=0;
+ legacy.rules[1].bodyCentiF=9680;legacy.rules[1].stepCentiF=65;legacy.rules[1].minimum=2;legacy.rules[1].boost.enabled=1;legacy.rules[1].boost.triggerCentiF=50;legacy.rules[1].boost.windowSeconds=15;legacy.rules[1].boost.riseSeconds=2;legacy.rules[1].boost.holdSeconds=60;legacy.rules[1].boost.returnSeconds=7;
+ legacy.checksum=BreezeLogicV1::checksum(legacy);const uint8_t* oldBytes=reinterpret_cast<const uint8_t*>(&legacy);std::vector<uint8_t> legacyBlob(oldBytes,oldBytes+sizeof(legacy));saved["logic-profile"]=legacyBlob;
+ writes=nvsWrites;FanRemote legacyController;legacyController.begin();assert(nvsWrites==writes&&saved["logic-profile"]==legacyBlob&&read16(logicState(legacyController),10)==27&&logicState(legacyController)[13]==5);
+ runtimeTick(legacyController,1000,97.6f,74);assert(logicState(legacyController)[3]==4);auto beforeMigration=logicState(legacyController);auto learnedBeforeMigration=learnedRecords();
+ BreezeLogic::Profile migrated;migrated.revision=27;migrated.probeMask=legacy.probeMask;migrated.maximum=legacy.maximum;migrated.roomCentiF=migrated.coolRoomCentiF=legacy.roomCentiF;migrated.averageSeconds=legacy.averageSeconds;migrated.riseSeconds=legacy.riseSeconds;migrated.fallSeconds=legacy.fallSeconds;
+ for(int i=0;i<2;i++){const auto&from=legacy.rules[i];auto&to=migrated.rules[i];to.bodyCentiF=from.bodyCentiF;to.stepCentiF=from.stepCentiF;to.minimum=from.minimum;to.offBelow=from.offBelow;to.boost.enabled=from.boost.enabled;to.boost.extra=from.boost.extra;to.boost.triggerCentiF=from.boost.triggerCentiF;to.boost.windowSeconds=from.boost.windowSeconds;to.boost.riseSeconds=from.boost.riseSeconds;to.boost.holdSeconds=from.boost.holdSeconds;to.boost.returnSeconds=from.boost.returnSeconds;to.boost.curve=from.boost.curve;to.boost.reserved=from.boost.reserved;}
+ writes=nvsWrites;assert(submitProfile(legacyController,migrated)==0&&nvsWrites==writes+1&&read16(logicState(legacyController),10)==27&&read16(logicState(legacyController),4)==read16(beforeMigration,4));
+ BreezeLogic::Profile persistedMigration;assert(saved["logic-profile"].size()==sizeof(persistedMigration));memcpy(&persistedMigration,saved["logic-profile"].data(),sizeof(persistedMigration));
+ assert(persistedMigration.schema==2&&persistedMigration.revision==27&&BreezeLogic::sameSettings(persistedMigration,migrated)&&persistedMigration.checksum==BreezeLogic::checksum(persistedMigration)&&learnedRecords()==learnedBeforeMigration);
+ writes=nvsWrites;assert(submitProfile(legacyController,migrated)==0&&nvsWrites==writes); // Reopening after migration is idempotent.
+ saved["logic-profile"]=legacyBlob;saved["logic-profile"][8]^=1;FanRemote damagedLegacy;damagedLegacy.begin();assert(read16(logicState(damagedLegacy),10)==1&&logicState(damagedLegacy)[13]==7); // Reject a corrupt schema 1 checksum.
+ saved["logic-profile"].back()^=1;saved["fan-estimate"].back()^=1;FanRemote invalidReboot;invalidReboot.begin();count=transmissions;runtimeTick(invalidReboot,1000,102,72);
+ assert(status(invalidReboot)[4]==0&&logicState(invalidReboot)[12]==21&&transmissions==count&&read16(logicState(invalidReboot),10)==1);
+ puts("PASS: controller-owned automation, independent room thresholds/deadband and persisted profiles; ramp/OFF-restart/disconnect/current-state tracking; atomic/identical uploads, D2, missing-body minimum, manual pause/correction, boosts and command deduplication");
 }
 '''.replace('FIRMWARE_PROCESS', firmware_function('process'))
 with tempfile.TemporaryDirectory(prefix='breeze-ir-test-') as directory:
     path = Path(directory)
     (path/'fake.h').write_text(stub)
-    for header in ('Arduino.h','Preferences.h','IRrecv.h','IRsend.h','IRutils.h'):
+    (path/'legacy_logic_fixture.h').write_text(legacy_fixture)
+    for header in ('Arduino.h','Preferences.h','IRrecv.h','IRsend.h','IRutils.h','nvs.h'):
         (path/header).write_text('#include "fake.h"\n')
     (path/'test.cpp').write_text(harness)
     (path/'run.cmd').write_text('@echo off\ncall "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul\ncl /nologo /EHsc /std:c++17 /I . /I "'+str(root/'firmware/BreezeController')+'" test.cpp /Fe:test.exe\nif errorlevel 1 exit /b 1\ntest.exe\n')
