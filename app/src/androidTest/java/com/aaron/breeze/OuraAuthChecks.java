@@ -28,7 +28,12 @@ final class OuraAuthChecks {
             store.rejectToken("SYNTHETIC_TEST_TOKEN_NOT_REAL");try{store.token();throw new AssertionError("rejected token retained");}catch(IOException expected){}
             state=Uri.parse(store.begin(0,0)).getQueryParameter("state");store.accept(response(state).put("expires_in",1).toString());
             try{store.token();throw new AssertionError("nearly expired token used");}catch(IOException expected){}
-            return "PASS: Oura encrypted state/token persistence, wrong-state rejection, one-use callback, selected recording bounds, token replacement guard, expiry; isolated synthetic credentials, no network or UI\n";
+            state=Uri.parse(store.begin(0,0)).getQueryParameter("state");
+            JSONObject omittedScope=response(state);omittedScope.remove("scope");
+            store.accept(omittedScope.toString());
+            store=new OuraAccountStore(context,name,alias);check(store.token().equals("SYNTHETIC_TEST_TOKEN_NOT_REAL"),"omitted scope accepted and encrypted");
+            try{store.accept(omittedScope.toString());throw new AssertionError("scope-omitted replay accepted");}catch(IOException expected){}
+            return "PASS: Oura encrypted state/token persistence, wrong-state rejection, one-use callback, selected recording bounds, token replacement guard, expiry, omitted-scope persistence and replay rejection; isolated synthetic credentials, no network or UI\n";
         }finally{
             // Only disposable test preferences and the key created by this invocation are removed.
             context.deleteSharedPreferences(name);KeyStore keys=KeyStore.getInstance("AndroidKeyStore");keys.load(null);if(keys.containsAlias(alias))keys.deleteEntry(alias);

@@ -6,7 +6,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
-import java.util.Arrays;
 import java.util.Base64;
 
 /** Public application configuration and validation; contains no client secret. */
@@ -56,8 +55,16 @@ final class OuraOAuth {
             Object token=response.opt("access_token"), type=response.opt("token_type"), scope=response.opt("scope"), expiry=response.opt("expires_in");
             if (!(token instanceof String) || ((String)token).isEmpty() || ((String)token).length()>16384
                     || !((String)token).matches("[A-Za-z0-9._~+/-]+=*") || !(type instanceof String)
-                    || !"bearer".equalsIgnoreCase((String)type) || !(scope instanceof String)
-                    || !Arrays.asList(((String)scope).split(" +")).contains("daily") || !(expiry instanceof Number))
+                    || !"bearer".equalsIgnoreCase((String)type) || !(expiry instanceof Number))
+                throw new IllegalArgumentException();
+            // RFC 6749 section 4.2.2: scope may be omitted when unchanged from our
+            // Daily-only request, already bound by the one-use state above. Do not
+            // synthesize granted scope; the callback probes the sleep API before
+            // reporting that Oura is connected. Returned scope labels do not
+            // establish access; Oura enforces it on the requested sleep endpoint.
+            // Malformed scope remains invalid, including null or an empty string.
+            if (response.has("scope") && (!(scope instanceof String) || ((String)scope).length()>1024
+                    || !((String)scope).matches("[\\x21-\\x7e]+(?: +[\\x21-\\x7e]+)*")))
                 throw new IllegalArgumentException();
             double seconds=((Number)expiry).doubleValue();
             if (!Double.isFinite(seconds) || seconds<=0 || seconds!=Math.rint(seconds) || seconds>(Long.MAX_VALUE-nowWall)/1000L)

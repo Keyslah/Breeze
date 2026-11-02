@@ -56,18 +56,27 @@ A button click launches this fixed Android intent destination:
 The native receiver must be BROWSABLE and match `com.aaron.breeze://oura/callback`.
 The `oura_response` string extra is percent-encoded JSON in the intent URI;
 Android decodes the string extra. It contains `version: 1`, `state`, and either
-`error` or `access_token`, `token_type`, `expires_in` (seconds), and `scope`.
+`error` or `access_token`, `token_type`, `expires_in` (seconds), and optional `scope`.
 Only these fields are forwarded. The page never displays tokens or accepts a
 caller-supplied destination, package, component, or fallback URL.
-Failed response checks display a fixed reason (such as `scope_missing`), never
+Failed response checks display a fixed reason (such as `scope_empty`), never
 the rejected value. The script URL includes its content hash to avoid reusing
 a stale script after an updated page is deployed.
 
 The Android implementation must generate an unpredictable one-use state of
 32–128 URL-safe characters, verify it against its own unexpired pending request,
-reject unsolicited/replayed responses, validate expiry and scope again, clear
+reject unsolicited/replayed responses, validate expiry and any explicit scope again, clear
 intent data/extras, and encrypt accepted tokens with Android Keystore. No
 website response alone establishes that authorization or import succeeded.
+
+RFC 6749 section 4.2.2 permits an omitted scope when it matches the requested
+scope. The callback preserves omission rather than inserting `daily`. Android
+accepts omission only after validating its pending Daily-only request and
+confirms access with the sleep API before reporting a successful connection.
+An explicitly empty or malformed scope is still rejected. Returned permission
+labels alone do not determine authorization: the native app probes the requested
+sleep API, which must permit access before Breeze reports a connection. It does
+not request any additional scope or endpoint in response to a returned label.
 
 Run callback security checks without a browser or real credentials:
 

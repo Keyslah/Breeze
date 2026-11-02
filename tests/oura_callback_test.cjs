@@ -45,6 +45,29 @@ test("documented fragment response is allowlisted and expiry is numeric", () => 
   assert.deepEqual(parsed, { kind: "token", response: { version: 1, state, access_token: syntheticToken, token_type: "bearer", expires_in: 3600, scope: "daily" } });
 });
 
+test("omitted scope reaches the native receiver without a manufactured permission", () => {
+  const params = new URLSearchParams(fragment().slice(1)); params.delete("scope");
+  const parsed = parseResponse("", "#" + params);
+  assert.deepEqual(parsed, { kind: "token", response: { version: 1, state, access_token: syntheticToken, token_type: "bearer", expires_in: 3600 } });
+  const f = fakeBrowser("", "#" + params); start(f.browser);
+  assert.equal(f.button.hidden, false); assert.equal(f.browser.location.hash, "");
+  f.button.onclick();
+  const returned = JSON.parse(decodeURIComponent(f.browser.location.href.split("S.oura_response=")[1].slice(0, -4)));
+  assert.equal(Object.hasOwn(returned, "scope"), false);
+  assert.equal(returned.state, state); assert.equal(returned.access_token, syntheticToken);
+  params.delete("state"); assert.equal(parseResponse("", "#" + params).reason, "state_missing");
+});
+
+test("returned scope labels are preserved for the app to verify access with Oura", () => {
+  const parsed = parseResponse("", fragment({ scope: "synthetic_permission_label" }));
+  assert.equal(parsed.kind, "token");
+  assert.equal(parsed.response.scope, "synthetic_permission_label");
+  const f = fakeBrowser("", fragment({ scope: "synthetic_permission_label" }));start(f.browser);
+  assert.equal(f.button.hidden, false);
+  assert.match(f.status.textContent, /check this response before accepting/);
+  assert.equal(f.status.textContent.includes("connected"), false);
+});
+
 test("query tokens, refresh tokens and authorization codes are never relayed", () => {
   for (const query of ["?access_token=synthetic", "?code=synthetic", "?refresh_token=synthetic"]) {
     assert.equal(parseResponse(query, "").kind, "unsupported");
@@ -59,13 +82,13 @@ test("duplicates and mixed query/fragment responses are rejected", () => {
   assert.equal(parseResponse("", fragment() + "&access_token=another").kind, "invalid");
 });
 
-test("missing daily consent, invalid state, malformed credentials and expiry are rejected", () => {
+test("invalid state, malformed credentials, scope and expiry are rejected", () => {
   for (const override of [
     { state: "" }, { state: "short" }, { state: "x".repeat(129) }, { state: "<".repeat(43) },
     { access_token: "" }, { access_token: "x".repeat(16385) }, { access_token: "x;package=evil" },
-    { access_token: "x\nsecret" }, { token_type: "basic" }, { scope: "heartrate" }, { scope: "" },
+    { access_token: "x\nsecret" }, { token_type: "basic" }, { scope: "" },
     { expires_in: "0" }, { expires_in: "-1" }, { expires_in: "1.5" }, { expires_in: "1e5" },
-    { expires_in: "9007199254740992" }, { scope: "daily\nemail" }
+    { expires_in: "9007199254740992" }, { scope: "daily\nemail" }, { scope: " " }
   ]) assert.equal(parseResponse("", fragment(override)).kind, "invalid", Object.keys(override).join());
   assert.equal(parseResponse("", "#" + "x".repeat(65537)).kind, "invalid");
 });
@@ -75,8 +98,8 @@ test("failed checks identify only fixed reasons and never echo response values",
     [{ state: "" }, "state_missing"], [{ state: "short" }, "state_format"],
     [{ access_token: "" }, "token_missing"], [{ access_token: "private;bad" }, "token_format"],
     [{ token_type: "private_type" }, "token_type"], [{ expires_in: "" }, "expiry_missing"],
-    [{ expires_in: "private_expiry" }, "expiry_format"], [{ scope: "" }, "scope_missing"],
-    [{ scope: "private\nscope" }, "scope_format"], [{ scope: "private_scope" }, "daily_missing"]
+    [{ expires_in: "private_expiry" }, "expiry_format"], [{ scope: "" }, "scope_empty"],
+    [{ scope: "private\nscope" }, "scope_format"]
   ]) {
     assert.deepEqual(parseResponse("", fragment(override)), { kind: "invalid", reason });
     const f = fakeBrowser("", fragment(override)); start(f.browser);
