@@ -43,6 +43,7 @@ public class MainActivity extends Activity {
     private EditText doubleHitTimeout;
     private TextView doubleHitStatus;
     private TextView dreoStatus;
+    private TextView ouraStatus;
     private String doubleHitError="";
     private Button setupLogicButton,logicProfileButton;
     private Runnable logicPreview;
@@ -93,8 +94,10 @@ public class MainActivity extends Activity {
         if(!Settings.prefs(this).contains("place"))Settings.prefs(this).edit().putString("query","53214").putString("place","Milwaukee, Wisconsin • ZIP 53214 (city weather)").putString("latitude","43.0389").putString("longitude","-87.90647").apply();
         fahrenheit=true;visibleSeries=Settings.historyVisibleSeries(Settings.prefs(this));
         if(state!=null){tab=state.getString("tab","Home");if(!Arrays.asList("Home","Fan","Learn Remote","History","Setup").contains(tab))tab="Home";selected=state.getLong("selected",-1);followLatestHistory=state.getBoolean("followLatestHistory",true);exportSession=state.getLong("exportSession",-1);pendingVoiceAction=state.getInt("pendingVoiceAction",0);pendingBluetoothAction=state.getInt("pendingBluetoothAction",0);}
+        if(getIntent().getBooleanExtra("showOuraHistory",false)){tab="History";getIntent().removeExtra("showOuraHistory");}
         build();
     }
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);if(intent.getBooleanExtra("showOuraHistory",false)){intent.removeExtra("showOuraHistory");tab="History";build();}}
     @Override protected void onSaveInstanceState(Bundle b){super.onSaveInstanceState(b);b.putString("tab",tab);b.putLong("selected",selected);b.putBoolean("followLatestHistory",followLatestHistory);b.putLong("exportSession",exportSession);b.putInt("pendingVoiceAction",pendingVoiceAction);b.putInt("pendingBluetoothAction",pendingBluetoothAction);}
     @Override protected void onResume(){super.onResume();activityResumed=true;FanCommandTrace.record(this,"resume tab="+tab);IntentFilter filter=new IntentFilter(BreezeService.UPDATE);filter.addAction(BedtimeVoiceService.UPDATE);filter.addAction(Store.FEELINGS_CHANGED);registerReceiver(updates,filter,Context.RECEIVER_NOT_EXPORTED);reconcileBluetooth();handler.post(tick);}
     @Override protected void onPause(){flushLogicEdits();saveDoubleHitEdits();FanCommandTrace.record(this,"pause tab="+tab);activityResumed=false;BreezeService.setUiVisible(this,false);handler.removeCallbacks(tick);handler.removeCallbacks(queuedRefresh);handler.removeCallbacks(loadSavedHistory);unregisterReceiver(updates);super.onPause();}
@@ -127,6 +130,7 @@ public class MainActivity extends Activity {
         logicStatus=null;logicApplyLabel=null;setupLogicButton=null;logicProfileButton=null;
         doubleHitTimeout=null;doubleHitStatus=null;doubleHitError="";
         dreoStatus=null;
+        ouraStatus=null;
         liveReadings=null;homeLogicButton=null;homeRemoteButtons.clear();homeTouchedButton=null;homeTouchGeneration++;homeMessage="";
         currentFanSetting=null;currentFanDisplayed="";
         receiverLatest=null;receiverExternal=null;receiverLed=null;receiverSendStatus=null;irReceiverTestButton=null;irReceiverTestStatus=null;fanUtilityButtons.clear();
@@ -328,6 +332,8 @@ public class MainActivity extends Activity {
     }
     private void sessionAction(){if(!service())return;BreezeService b=BreezeService.current;if(!b.fresh()){toast("Wait for a fresh controller reading.");return;}if(b.latest.active())b.control(Protocol.STOP_RECORDING,0);else startRecordingWithVoice(false);}
     private void history(){
+        LinearLayout oura=card();oura.addView(bold("Oura",18,INK));ouraStatus=text(OuraConnection.status(this),13,MUTED);ouraStatus.setTag("ouraConnectionStatus");oura.addView(ouraStatus);
+        two(oura,"Connect Oura",()->OuraConnection.start(this,worker,savedHistory==null?null:savedHistory.session,()->{if(ouraStatus!=null)ouraStatus.setText(OuraConnection.status(this));}),"Refresh Oura",()->{worker.execute(()->{OuraConnection.probe(this);handler.post(()->{if(ouraStatus!=null)ouraStatus.setText(OuraConnection.status(this));});});ouraStatus.setText("Checking Oura…");});
         unassignedFeelings=card();unassignedFeelings.setVisibility(View.GONE);
         if(!historyMatchesSelection()){LinearLayout loading=card();historyLoadingLabel=text("Loading recorded night…",15,INK);loading.addView(historyLoadingLabel);requestSavedHistory();return;}
         List<Store.Session> sessions=savedHistory.sessions;if(sessions.isEmpty()){selected=-1;LinearLayout empty=card();empty.addView(bold("Recorded nights",23,INK));empty.addView(text("No sessions yet. Connect your controller and download its records.",15,INK));addButton(empty,"Connect controller",true,this::connect);return;}

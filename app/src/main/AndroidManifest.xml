@@ -15,6 +15,14 @@
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
+        <activity android:name=".OuraCallbackActivity" android:exported="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.aaron.breeze" android:host="oura" android:path="/callback" />
+            </intent-filter>
+        </activity>
         <service android:name=".BreezeService" android:exported="false" android:foregroundServiceType="connectedDevice" />
         <service android:name=".BedtimeVoiceService" android:exported="false" android:foregroundServiceType="microphone" />
     </application>
