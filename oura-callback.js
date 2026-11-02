@@ -18,9 +18,8 @@
     token_type: "Oura did not identify the token as a Bearer token.",
     expiry_missing: "Oura did not return the token lifetime.",
     expiry_format: "Oura returned an unsupported token lifetime.",
-    scope_missing: "Oura did not return the granted permissions (scope).",
+    scope_empty: "Oura returned an empty granted-permissions field.",
     scope_format: "Oura returned an unsupported permissions format.",
-    daily_missing: "Oura did not include Daily access in the granted permissions.",
     malformed_response: "The sign-in response could not be read."
   });
   function invalid(reason) { return { kind: "invalid", reason }; }
@@ -59,19 +58,23 @@
       const token = params.get("access_token") || "";
       const type = params.get("token_type") || "";
       const expiry = params.get("expires_in") || "";
-      const scope = params.get("scope") || "";
+      const scope = params.get("scope");
       if (!token) return invalid("token_missing");
       if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16384) return invalid("token_format");
       if (type.toLowerCase() !== "bearer") return invalid("token_type");
       if (!expiry) return invalid("expiry_missing");
       if (!/^\d{1,16}$/.test(expiry) || !Number.isSafeInteger(Number(expiry)) || Number(expiry) <= 0) return invalid("expiry_format");
-      if (!scope) return invalid("scope_missing");
-      if (scope.length > 1024 || /[^\x20-\x7e]/.test(scope)) return invalid("scope_format");
-      if (!scope.split(/ +/).includes("daily")) return invalid("daily_missing");
-      return {
-        kind: "token",
-        response: { version: 1, state, access_token: token, token_type: "bearer", expires_in: Number(expiry), scope }
-      };
+      // RFC 6749 section 4.2.2 permits omitted scope when it matches the request.
+      // Preserve omission; never manufacture a claim that Daily access was granted.
+      // Breeze binds this response to its own Daily request and verifies access
+      // with the sleep API. A returned scope label alone is not proof of access.
+      if (scope !== null) {
+        if (!scope) return invalid("scope_empty");
+        if (scope.length > 1024 || !/^[\x21-\x7e]+(?: +[\x21-\x7e]+)*$/.test(scope)) return invalid("scope_format");
+      }
+      const response = { version: 1, state, access_token: token, token_type: "bearer", expires_in: Number(expiry) };
+      if (scope !== null) response.scope = scope;
+      return { kind: "token", response };
     } catch (error) {
       return invalid(error.message === "response_too_large" || error.message === "duplicate_parameter" ? error.message : "malformed_response");
     }
