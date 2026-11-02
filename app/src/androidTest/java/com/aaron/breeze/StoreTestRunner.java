@@ -33,6 +33,7 @@ public class StoreTestRunner extends Instrumentation {
         } finally {if(d.isOpen())d.close();if(migrated!=null)migrated.close();c.deleteDatabase(name);}
     }
     @Override public void onStart(){Bundle result=new Bundle();Context c=getTargetContext();String name="temporary-transfer-test-"+System.nanoTime()+".db";Store s=null;try{
+        if(focusedCheck.equals("ouraCloudInspection")){result.putString("stream",OuraCloudInspection.run(c));finish(-1,result);return;}
         if(focusedCheck.equals("ouraAuth")){result.putString("stream",OuraAuthChecks.run(c));finish(-1,result);return;}
         if(focusedCheck.equals("dreoTemperature")){result.putString("stream",DreoTemperatureStoreChecks.run(this));finish(-1,result);return;}
         if(focusedCheck.equals("historyRefresh")){result.putString("stream",HistoryRefreshChecks.run(this));finish(-1,result);return;}
