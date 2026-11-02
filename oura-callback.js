@@ -4,13 +4,33 @@
 
   const MAX_RESPONSE_LENGTH = 65536;
   const HANDOFF_LIFETIME_MS = 300000;
+  // Fixed messages only: never put response values or provider text on the page.
+  const REJECTION_MESSAGES = Object.freeze({
+    response_too_large: "The sign-in response exceeded the supported size.",
+    duplicate_parameter: "Oura returned a repeated response field.",
+    mixed_locations: "Oura split the response between the query and fragment.",
+    state_missing: "Oura did not return the sign-in state.",
+    state_format: "Oura returned an unsupported sign-in state format.",
+    error_format: "Oura returned an unsupported error response.",
+    fragment_missing: "Oura did not return a token response in the URL fragment.",
+    token_missing: "Oura did not return an access token.",
+    token_format: "Oura returned an unsupported access-token format.",
+    token_type: "Oura did not identify the token as a Bearer token.",
+    expiry_missing: "Oura did not return the token lifetime.",
+    expiry_format: "Oura returned an unsupported token lifetime.",
+    scope_missing: "Oura did not return the granted permissions (scope).",
+    scope_format: "Oura returned an unsupported permissions format.",
+    daily_missing: "Oura did not include Daily access in the granted permissions.",
+    malformed_response: "The sign-in response could not be read."
+  });
+  function invalid(reason) { return { kind: "invalid", reason }; }
 
   function uniqueParameters(raw) {
-    if (raw.length > MAX_RESPONSE_LENGTH) throw new Error("invalid_response");
+    if (raw.length > MAX_RESPONSE_LENGTH) throw new Error("response_too_large");
     const params = new URLSearchParams(raw.replace(/^[?#]/, ""));
     const keys = new Set();
     for (const [key] of params) {
-      if (keys.has(key)) throw new Error("invalid_response");
+      if (keys.has(key)) throw new Error("duplicate_parameter");
       keys.add(key);
     }
     return params;
@@ -24,32 +44,36 @@
       // This public static page must not be used for code exchange or query tokens.
       if (query.has("access_token") || query.has("refresh_token") || query.has("code") ||
           fragment.has("code") || fragment.has("refresh_token")) return { kind: "unsupported" };
-      if (query.size && fragment.size) return { kind: "invalid" };
+      if (query.size && fragment.size) return invalid("mixed_locations");
       const params = fragment.size ? fragment : query;
       const state = params.get("state") || "";
-      if (!/^[A-Za-z0-9_-]{32,128}$/.test(state)) return { kind: "invalid" };
+      if (!state) return invalid("state_missing");
+      if (!/^[A-Za-z0-9_-]{32,128}$/.test(state)) return invalid("state_format");
       if (params.has("error")) {
         const error = params.get("error");
-        if (params.has("access_token") || !/^[a-z_]{1,80}$/.test(error)) return { kind: "invalid" };
+        if (params.has("access_token") || !/^[a-z_]{1,80}$/.test(error)) return invalid("error_format");
         // Discard descriptions and all unrecognized fields; never render provider text.
         return { kind: "error", response: { version: 1, state, error } };
       }
-      if (!fragment.size) return { kind: "invalid" };
+      if (!fragment.size) return invalid("fragment_missing");
       const token = params.get("access_token") || "";
       const type = params.get("token_type") || "";
       const expiry = params.get("expires_in") || "";
       const scope = params.get("scope") || "";
-      if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16384 ||
-          type.toLowerCase() !== "bearer" || !/^\d{1,16}$/.test(expiry) ||
-          !Number.isSafeInteger(Number(expiry)) || Number(expiry) <= 0 ||
-          scope.length > 1024 || /[^\x20-\x7e]/.test(scope) ||
-          !scope.split(/ +/).includes("daily")) return { kind: "invalid" };
+      if (!token) return invalid("token_missing");
+      if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16384) return invalid("token_format");
+      if (type.toLowerCase() !== "bearer") return invalid("token_type");
+      if (!expiry) return invalid("expiry_missing");
+      if (!/^\d{1,16}$/.test(expiry) || !Number.isSafeInteger(Number(expiry)) || Number(expiry) <= 0) return invalid("expiry_format");
+      if (!scope) return invalid("scope_missing");
+      if (scope.length > 1024 || /[^\x20-\x7e]/.test(scope)) return invalid("scope_format");
+      if (!scope.split(/ +/).includes("daily")) return invalid("daily_missing");
       return {
         kind: "token",
         response: { version: 1, state, access_token: token, token_type: "bearer", expires_in: Number(expiry), scope }
       };
-    } catch (_) {
-      return { kind: "invalid" };
+    } catch (error) {
+      return invalid(error.message === "response_too_large" || error.message === "duplicate_parameter" ? error.message : "malformed_response");
     }
   }
 
@@ -84,15 +108,18 @@
     search = hash = "";
     let pending = result.response || null;
     const kind = result.kind;
+    const reason = result.reason;
     result = null;
     const messages = {
-      empty: "This is the return page for Oura sign-in. Once the Oura-enabled Breeze update is installed, start Connect Oura from History on your Android phone.",
+      empty: "This is the return page for Oura sign-in. Start Connect Oura from History on your Android phone.",
       unsupported: "This sign-in method is not supported by this callback. Return to Breeze to check the Oura application configuration.",
       invalid: "This sign-in response could not be accepted. Return to Breeze and start a new connection.",
       error: "Oura did not complete this sign-in. Return to Breeze to finish the request or try again.",
       token: "Return to Breeze on your Android phone to finish connecting. Breeze will check this response before accepting it."
     };
-    status.textContent = messages[kind];
+    status.textContent = kind === "invalid"
+      ? (REJECTION_MESSAGES[reason] || REJECTION_MESSAGES.malformed_response) + " Return to Breeze to start again. Check: " + reason + "."
+      : messages[kind];
     if (!pending) return;
     button.hidden = false;
     function clear() {
