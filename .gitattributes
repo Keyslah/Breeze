@@ -1,0 +1,2 @@
+# Integrity hashes must cover the same callback bytes on Windows and GitHub Pages.
+website/*.js text eol=lf

@@ -124,11 +124,22 @@ Breeze's local storage. Manage those copies with their respective holder or
 service. No data is deleted merely by reading this policy.</p>
 <h2>Policy updates and contact</h2>
 <p>The project website is hosted by GitHub Pages. It contains informational pages
-and does not provide an Oura sign-in form, collect health readings, or use
+and an Oura sign-in return page. It does not provide an Oura password form, collect health readings, or use
 analytics scripts, tracking cookies, or third-party font services. GitHub
 receives ordinary web requests, including your IP address, when you visit the
 site; its handling of that information is governed by the
 <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>.</p>
+<p>The return page uses a local script to hand an OAuth response directly to the
+Breeze Android package when you choose Return to Breeze. It does not exchange
+tokens, make API requests, or save responses in cookies or browser storage.
+The supported token response arrives in a URL fragment, which is not sent to
+the web host. The script removes the response from the current browser-history
+entry and keeps it temporarily in page memory. The return link expires after
+5 minutes or sooner if the token expires; using the button or leaving the page
+discards the pending response. Query-string token and authorization-code
+responses are rejected; query strings, unlike fragments, are part of the
+ordinary web request received by the host. The Android integration must still
+validate the sign-in request before accepting any response.</p>
 <p>Changes to this policy will be published at this same address with an updated
 effective date. The repository's file history records prior versions.</p>
 <p>For privacy questions, contact the maintainer through the
