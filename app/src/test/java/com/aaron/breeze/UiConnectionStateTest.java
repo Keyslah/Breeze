@@ -5,6 +5,19 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.Assert.*;
 
 public class UiConnectionStateTest {
+    @Test public void recordingRetainsConnectionWithoutVoiceDreoOrSensors(){
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setVisible(true);long session=state.generation();state.setRecording(true);state.setVisible(false);
+        clock.addAndGet(28800000);assertTrue(state.allows(session));
+        state.setVisible(true);assertEquals(session,state.generation());state.setVisible(false);
+        clock.addAndGet(120001);state.setRecording(false);assertFalse(state.allows(session));
+    }
+    @Test public void recordingDoesNotOverrideExplicitBluetoothDisconnect(){
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setRecording(true);assertFalse(state.allows(state.generation()));
+        state.setVisible(true);state.setRecording(true);long session=state.generation();state.disconnect();
+        state.setRecording(true);assertFalse(state.allows(session));assertFalse(state.allows(state.generation()));
+    }
     @Test public void existingRecordingListenerRetainsLockedConnectionWithoutDreo(){
         AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
         state.setVisible(true);long session=state.generation();state.setListening(true);state.setVisible(false);

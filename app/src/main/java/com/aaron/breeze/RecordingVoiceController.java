@@ -127,9 +127,11 @@ public final class RecordingVoiceController {
     /** Only an unlocked, resumed Activity calls this; BLE callbacks never start a service. */
     public static void reconcile(Context visibleActivity) {
         remember(visibleActivity);
-        if (state.isListeningDisabled()) { stopMicrophone(); return; }
+        RecordingIntent intent = PhoneRecording.get(visibleActivity).state();
         BreezeService controller = BreezeService.current;
-        if (controller != null && controller.fresh()) onTelemetry(visibleActivity, controller.latest.active());
+        if (intent.known) onPhoneRecording(visibleActivity, intent);
+        else if (controller != null && controller.fresh()) onTelemetry(visibleActivity, controller.latest.active());
+        if (state.isListeningDisabled()) { stopMicrophone(); return; }
         if (state.isPowerBlocked()) return;
         if (visibleActivity.getSystemService(KeyguardManager.class).isKeyguardLocked()) return;
         if (visibleActivity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -216,8 +218,17 @@ public final class RecordingVoiceController {
         });
     }
 
-    /** A valid live state packet is authoritative, even if its command acknowledgment failed. */
+    static void onPhoneRecording(Context context, RecordingIntent intent) {
+        if (intent.known) updateRecordingState(context, intent.active);
+    }
+
+    /** Hardware may confirm legacy recordings; it never overrides a phone Start/Stop. */
     static void onTelemetry(Context context, boolean active) {
+        RecordingIntent intent = PhoneRecording.get(context).state();
+        if (!active) recordingContext = new RecordingContext(null, -1);
+        updateRecordingState(context, intent.known ? intent.active : active);
+    }
+    private static void updateRecordingState(Context context, boolean active) {
         remember(context);
         boolean wasActive = state.isActive(), wasPending = state.isPending();
         if (!active || !wasActive) recordingContext = new RecordingContext(null, -1);

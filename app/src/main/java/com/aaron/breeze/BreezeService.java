@@ -76,6 +76,9 @@ public class BreezeService extends Service {
     private BluetoothGatt gatt;
     private BluetoothGattCharacteristic rx;
     private Store store;
+    private PhoneRecording phoneRecording;
+    private final RecordingReconciler recordingReconciler=new RecordingReconciler();
+    private boolean contactTestStarting;
     private RecordStorageQueue recordStorage;
     private int recordConnectionGeneration,metadataGeneration,downloadGeneration;
     private long phoneCursor=-1;
@@ -99,7 +102,7 @@ public class BreezeService extends Service {
     public interface HomeFanResult {void done(boolean sent,Integer correctedSetting);}
     private Result homeManualCompletion;
     private final VoiceFanCommands voiceFanCommands=new VoiceFanCommands();
-    private static class Pending {byte[] bytes;int seq,error;boolean submitted,written,acknowledged;long deadline;Result done;Pending(byte[] b,int s,Result r){bytes=b;seq=s;done=r;}}
+    private static class Pending {byte[] bytes;int seq,error;boolean submitted,written,acknowledged;long deadline;Result done;java.util.function.BooleanSupplier valid=()->true;Pending(byte[] b,int s,Result r){bytes=b;seq=s;done=r;}}
     public static void setUiVisible(Context context,boolean visible){
         uiConnection.setVisible(visible&&screenAvailable(context));
         BreezeService service=current;
@@ -134,18 +137,19 @@ public class BreezeService extends Service {
     private final Runnable backgroundDisconnect=this::updateBackgroundDisconnect;
     private void updateBackgroundDisconnect(){
         handler.removeCallbacks(backgroundDisconnect);
+        uiConnection.setRecording(phoneRecording!=null&&phoneRecording.state().active);
         if(!visibleForBluetooth()){stopForUi();return;}
         long remaining=uiConnection.backgroundRemainingMs();
         if(remaining>0)handler.postDelayed(backgroundDisconnect,remaining);
     }
     @Override public void onCreate(){super.onCreate();created=true;store=new Store(this);adapter=getSystemService(BluetoothManager.class).getAdapter();getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel("connection","Controller connection",NotificationManager.IMPORTANCE_LOW));IntentFilter filter=new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);filter.addAction(Intent.ACTION_SCREEN_OFF);registerReceiver(bluetoothState,filter,Context.RECEIVER_EXPORTED);
         // Meet Android's foreground contract before exposing a service that the UI can stop.
-        startForeground(1,notification());foregroundStarted=true;current=this;
+        startForeground(1,notification());foregroundStarted=true;current=this;phoneRecording=PhoneRecording.get(this);
         try{drift=new DriftDiagnostics(new java.io.File(getFilesDir(),"drift-diagnostics"),System::currentTimeMillis,SystemClock::elapsedRealtime);drift.continuityBreak("Breeze service started");}
         catch(Exception error){driftInitError=safeMessage(error);android.util.Log.w(TAG,"Drift diagnostics unavailable",error);}
     }
     private final Runnable periodicSync=new Runnable(){public void run(){if(!visibleForBluetooth()){stopForUi();return;}if(ready&&!syncQueued)download();if(visibleForBluetooth())handler.postDelayed(this,30000);}};
-    private final Runnable connectionWatchdog=new Runnable(){public void run(){if(!visibleForBluetooth()){stopForUi();return;}checkConnectionHealth();refreshLogicClock();if(visibleForBluetooth())handler.postDelayed(this,3000);}};
+    private final Runnable connectionWatchdog=new Runnable(){public void run(){if(!visibleForBluetooth()){stopForUi();return;}checkConnectionHealth();refreshLogicClock();reconcileRecording();if(visibleForBluetooth())handler.postDelayed(this,3000);}};
     private final Runnable reconnect=this::tryReconnect;
     private final BroadcastReceiver bluetoothState=new BroadcastReceiver(){@Override public void onReceive(Context context,Intent intent){if(Intent.ACTION_SCREEN_OFF.equals(intent.getAction()))setUiVisible(context,false);else handleBluetoothState(intent.getIntExtra(BluetoothAdapter.EXTRA_STATE,BluetoothAdapter.ERROR));}};
     @Override public int onStartCommand(Intent intent,int flags,int id){
@@ -164,7 +168,7 @@ public class BreezeService extends Service {
         return START_NOT_STICKY;
     }
     @Override public IBinder onBind(Intent i){return null;}
-    private Notification notification(){PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);Notification.Builder builder=new Notification.Builder(this,"connection").setSmallIcon(com.aaron.breeze.R.drawable.ic_breeze).setContentTitle("Breeze • "+status).setContentText(dreo!=null&&dreo.active()?(dreoLockReady()?"Dreo state checks every 3 minutes, including while locked":"Dreo checks every 3 minutes · locked-phone setup required"):latest!=null&&latest.active()?"Controller is recording locally":"Connected for setup and record downloads").setContentIntent(open).setOngoing(true);if(dreo!=null&&dreo.active()){PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,BreezeService.class).setAction(STOP_CONNECTION),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);builder.addAction(new Notification.Action.Builder(null,"Stop",stop).build());}return builder.build();}
+    private Notification notification(){PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);Notification.Builder builder=new Notification.Builder(this,"connection").setSmallIcon(com.aaron.breeze.R.drawable.ic_breeze).setContentTitle("Breeze • "+status).setContentText(phoneRecording!=null&&phoneRecording.state().active?"Recording until you tap Stop" : dreo!=null&&dreo.active()?(dreoLockReady()?"Dreo state checks every 3 minutes, including while locked":"Dreo checks every 3 minutes · locked-phone setup required"):latest!=null&&latest.active()?"Controller is recording locally":"Connected for setup and record downloads").setContentIntent(open).setOngoing(true);if(dreo!=null&&dreo.active()){PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,BreezeService.class).setAction(STOP_CONNECTION),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);builder.addAction(new Notification.Action.Builder(null,"Disconnect",stop).build());}return builder.build();}
     /** Explicit account changes call this; ordinary Activity refreshes do not restart the poll timer. */
     public void reloadDreoSync(){
         if(dreo!=null){dreo.stop();dreo=null;}
@@ -299,9 +303,14 @@ public class BreezeService extends Service {
             else if(b[0]==1){latest=Protocol.decode(b,System.currentTimeMillis(),thirdProbeSupported);lastPacket=SystemClock.elapsedRealtime();if(current==this)RecordingVoiceController.onTelemetry(this,latest.active());if(pending!=null&&pending.submitted&&latest.ack==pending.seq){pending.acknowledged=true;pending.error=latest.commandError;completeCommand();}changed();}
             else if(b[0]==2||b[0]==6||b[0]==10||b[0]==11){saveRecord(b);}
             else if(b[0]==3){receiveMetadata(b,p);}
+            reconcileRecording();
         }catch(Exception e){lastError="Could not save/decode records: "+safeMessage(e)+". Controller records retained.";changed();}
     }
     public void command(IntFunction<byte[]> make,Result done){enqueue(make,done,false);}
+    private void recordingCommand(IntFunction<byte[]> make,java.util.function.BooleanSupplier valid,Result done){
+        if(!visibleForBluetooth()||!ready){done.done(false);return;}
+        seq=seq%65535+1;Pending item=new Pending(make.apply(seq),seq,done);item.valid=valid;queue.add(item);pump();
+    }
     private void enqueue(IntFunction<byte[]> make,Result done,boolean priority){if(!visibleForBluetooth()||!ready){lastError="Keep Breeze open and connect to the controller first.";changed();if(done!=null)done.done(false);return;}seq=seq%65535+1;Pending item=new Pending(make.apply(seq),seq,done);if(drift!=null)drift.command("queued",item.bytes,"");if(priority)queue.addFirst(item);else queue.add(item);pump();changed();}
     private void completeCommand(){if(pending==null||!pending.written||!pending.acknowledged)return;Pending done=pending;pending=null;if(drift!=null)drift.command("acknowledged",done.bytes,"controller error="+done.error);if(done.error!=0){failQueue(Protocol.error(done.error));if(done.done!=null)done.done.done(false);}else{lastError="";if(done.done!=null)done.done.done(true);}pump();changed();}
     boolean transportAvailable(){return gatt!=null&&rx!=null;}
@@ -317,6 +326,7 @@ public class BreezeService extends Service {
     private void commandTimedOut(Pending sent,BluetoothGatt connection){if(visibleForBluetooth()&&pending==sent&&gatt==connection)recoverConnection("Controller did not confirm the command. Reconnecting; check its state before retrying.");}
     private void submitPending(Pending sent,BluetoothGatt connection){
         if(!visibleForBluetooth()||pending!=sent||gatt!=connection||!ready||sent.submitted)return;
+        if(!sent.valid.getAsBoolean()){pending=null;if(sent.done!=null)sent.done.done(false);pump();return;}
         if(!allowed()){closeGatt();failQueue("Nearby devices permission was revoked.");return;}
         if(SystemClock.elapsedRealtime()>=sent.deadline){commandTimedOut(sent,connection);return;}
         try{
@@ -412,6 +422,25 @@ public class BreezeService extends Service {
         if(latest.active()){lastError="A recording is already running on the controller.";recordingStartFailed();changed();return;}
         if(!latest.storageReady()){lastError="Controller storage is unavailable. Saving its records to this phone before recording can restart.";recordingStartFailed();download();changed();return;}
         command(s->Protocol.clock(System.currentTimeMillis()/1000,s),ok->{if(ok)command(s->Protocol.control(Protocol.START_RECORDING,0,s),started->{if(started)download();else recordingStartFailed();});else recordingStartFailed();});
+    }
+    void phoneRecordingChanged(PhoneRecording owner){
+        if(phoneRecording!=owner||destroyed||stoppedForUi)return;
+        if(visibleForBluetooth())updateBackgroundDisconnect();
+        reconcileRecording();changed();
+    }
+    void reconcileRecording(){
+        if(phoneRecording==null||contactTestStarting)return;
+        RecordingIntent intent=phoneRecording.state();
+        RecordingReconciler.Action action=recordingReconciler.next(intent,visibleForBluetooth()&&sensorFirmware&&fresh(),latest!=null&&latest.active(),latest!=null&&latest.storageReady(),SystemClock.elapsedRealtime());
+        if(action==RecordingReconciler.Action.NONE)return;
+        long ticket=recordingReconciler.attempt();
+        java.util.function.BooleanSupplier valid=()->recordingReconciler.current(ticket)&&phoneRecording.state().revision==intent.revision;
+        Result finished=ok->{if(!recordingReconciler.current(ticket))return;recordingReconciler.completed(ticket,SystemClock.elapsedRealtime());if(ok)download();reconcileRecording();changed();};
+        if(action==RecordingReconciler.Action.STOP){recordingCommand(s->Protocol.control(Protocol.STOP_RECORDING,0,s),valid,finished);return;}
+        recordingCommand(s->Protocol.clock(System.currentTimeMillis()/1000,s),valid,ok->{
+            if(!ok||!valid.getAsBoolean()||!RecordingReconciler.mayStart(phoneRecording.state(),intent.revision)){finished.done(false);return;}
+            recordingCommand(s->Protocol.control(Protocol.START_RECORDING,0,s),valid,finished);
+        });
     }
     private void recordingStartFailed(){if(current==this)RecordingVoiceController.startFailed(this);}
     public void control(int action,int value){if(!sensorFirmware||(action!=Protocol.STOP_RECORDING&&action!=6)){lastError="Sensor firmware required for this action.";changed();return;}command(s->Protocol.control(action,value,s),ok->{if(ok&&action==Protocol.STOP_RECORDING)download();});}
@@ -627,10 +656,15 @@ public class BreezeService extends Service {
         if(irReceiverTestActive()){lastError="Wait for the LED receiver test to finish.";recordingStartFailed();changed();return;}
         if(!freshFan()){lastError="Connect the updated IR controller first.";recordingStartFailed();changed();return;}
         if(latest.active()){lastError="Stop the current recording before starting a probe test.";recordingStartFailed();changed();return;}
-        command(s->Protocol.clock(System.currentTimeMillis()/1000,s),ok->{if(ok)command(s->Protocol.fan(Protocol.CONTACT_TEST,0,0,s),started->{if(started)download();else recordingStartFailed();});else recordingStartFailed();});
+        contactTestStarting=true;
+        RecordingIntent intent=phoneRecording==null?RecordingIntent.UNKNOWN:phoneRecording.state();
+        java.util.function.BooleanSupplier valid=()->!intent.known||RecordingReconciler.mayStart(phoneRecording.state(),intent.revision);
+        Result finished=started->{contactTestStarting=false;if(started)download();else recordingStartFailed();reconcileRecording();};
+        recordingCommand(s->Protocol.clock(System.currentTimeMillis()/1000,s),valid,ok->{if(ok&&valid.getAsBoolean())recordingCommand(s->Protocol.fan(Protocol.CONTACT_TEST,0,0,s),valid,finished);else finished.done(false);});
     }
     @Override protected void dump(java.io.FileDescriptor fd,java.io.PrintWriter out,String[] args){
         out.println("status="+status+" ready="+ready+" firmware="+controllerFirmware);
+        RecordingIntent intent=phoneRecording==null?RecordingIntent.UNKNOWN:phoneRecording.state();out.println("phoneRecordingKnown="+intent.known+" phoneRecording="+intent.active+" session="+intent.session+" revision="+intent.revision);
         out.println("dreo="+(dreo==null?"disabled":dreo.diagnostics())+" wakeLockHeld="+(dreoWakeLock!=null&&dreoWakeLock.isHeld())+" batteryExempt="+dreoLockReady());
         out.println("dreoCorrectionCount="+DreoCorrections.count(Settings.prefs(this)));
         out.println("driftDiagnostics="+(drift==null?"not started: "+driftInitError:drift.status()));
@@ -651,7 +685,7 @@ public class BreezeService extends Service {
         out.println("lastError="+lastError);out.println("fanCommandTrace:\n"+FanCommandTrace.read(this));
         out.println("voice="+RecordingVoiceController.describe());
     }
-    private void closeGatt(){recordConnectionGeneration++;metadataGeneration++;downloadGeneration++;phoneCursor=-1;if(drift!=null)drift.continuityBreak("Bluetooth connection closed");invalidateDreo();logicClockGeneration++;nextLogicProfile=null;nextLogicResumeAfterUpload=false;logicClockApplying=false;logicWindowApplied=false;logicWindowSupported=false;logicMultiWindowSupported=false;logicClockAt=logicClockWall=logicClockAttempt=0;logicClockZone="";doubleHitGeneration++;doubleHitApplying=false;doubleHitApplied=doubleHitAttempted=null;doubleHitSupported=false;irHardwareTimed=false;irSoftwareBursts=0;doubleHitStatus="Saved on phone · waiting for controller";fanCommandStatus="";logicUploadGeneration++;if(logicUploading)logicApplyNote="Couldn't apply: the controller disconnected";logicUploading=false;logicAppliedForConnection=false;logicSupported=false;logicNeedsFirmware=false;logic=null;logicExplicitResumeRequested=logicResumeAfterUpload=nextLogicResumeAfterUpload=homeLogicTogglePending=false;homeLogicToggleGeneration++;logicStatus="Controller disconnected · it keeps running the last applied range";if(irReceiverTestActive()){irReceiverTestRequested=false;irReceiverTestRunning=false;irReceiverTestGeneration++;irReceiverTestStatus="LED receiver test result unavailable: controller disconnected.";}receiverMonitorSupported=false;receiverMonitorCounter=-1;ready=false;rx=null;latest=null;lastPacket=readySince=0;telemetryIntervalMs=Protocol.DEFAULT_TELEMETRY_INTERVAL_MS;sensorFirmware=false;thirdProbeSupported=false;irFirmware=false;irReceiverTestSupported=false;fan=null;controllerFreeBytes=-1;controllerStorageReady=false;controllerFirmware="unknown";BluetoothGatt old=gatt;gatt=null;if(old!=null){try{if(allowed())old.disconnect();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not disconnect expired Bluetooth handle",e);}try{old.close();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not close expired Bluetooth handle",e);}}}
+    private void closeGatt(){recordingReconciler.disconnected();contactTestStarting=false;recordConnectionGeneration++;metadataGeneration++;downloadGeneration++;phoneCursor=-1;if(drift!=null)drift.continuityBreak("Bluetooth connection closed");invalidateDreo();logicClockGeneration++;nextLogicProfile=null;nextLogicResumeAfterUpload=false;logicClockApplying=false;logicWindowApplied=false;logicWindowSupported=false;logicMultiWindowSupported=false;logicClockAt=logicClockWall=logicClockAttempt=0;logicClockZone="";doubleHitGeneration++;doubleHitApplying=false;doubleHitApplied=doubleHitAttempted=null;doubleHitSupported=false;irHardwareTimed=false;irSoftwareBursts=0;doubleHitStatus="Saved on phone · waiting for controller";fanCommandStatus="";logicUploadGeneration++;if(logicUploading)logicApplyNote="Couldn't apply: the controller disconnected";logicUploading=false;logicAppliedForConnection=false;logicSupported=false;logicNeedsFirmware=false;logic=null;logicExplicitResumeRequested=logicResumeAfterUpload=nextLogicResumeAfterUpload=homeLogicTogglePending=false;homeLogicToggleGeneration++;logicStatus="Controller disconnected · it keeps running the last applied range";if(irReceiverTestActive()){irReceiverTestRequested=false;irReceiverTestRunning=false;irReceiverTestGeneration++;irReceiverTestStatus="LED receiver test result unavailable: controller disconnected.";}receiverMonitorSupported=false;receiverMonitorCounter=-1;ready=false;rx=null;latest=null;lastPacket=readySince=0;telemetryIntervalMs=Protocol.DEFAULT_TELEMETRY_INTERVAL_MS;sensorFirmware=false;thirdProbeSupported=false;irFirmware=false;irReceiverTestSupported=false;fan=null;controllerFreeBytes=-1;controllerStorageReady=false;controllerFirmware="unknown";BluetoothGatt old=gatt;gatt=null;if(old!=null){try{if(allowed())old.disconnect();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not disconnect expired Bluetooth handle",e);}try{old.close();}catch(RuntimeException e){android.util.Log.w(TAG,"Could not close expired Bluetooth handle",e);}}}
     private void stopForUi(){
         stoppedForUi=true;
         uiConnection.setListening(false);
@@ -661,5 +695,5 @@ public class BreezeService extends Service {
         failQueue("Phone disconnected. Records remain on the controller.");status="Disconnected";
         stopForeground(STOP_FOREGROUND_REMOVE);foregroundStarted=false;stopSelf();
     }
-    @Override public void onDestroy(){destroyed=true;uiConnection.setListening(false);stopDreoSync();unregisterReceiver(bluetoothState);stopScan();closeGatt();failQueue("Phone disconnected. Records remain on the controller.");handler.removeCallbacksAndMessages(null);closeRecordStorage();if(current==this)current=null;super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;uiConnection.setListening(false);uiConnection.setRecording(false);stopDreoSync();unregisterReceiver(bluetoothState);stopScan();closeGatt();failQueue("Phone disconnected. Records remain on the controller.");handler.removeCallbacksAndMessages(null);closeRecordStorage();if(current==this)current=null;super.onDestroy();}
 }

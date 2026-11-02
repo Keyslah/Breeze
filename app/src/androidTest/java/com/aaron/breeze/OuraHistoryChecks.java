@@ -32,11 +32,11 @@ final class OuraHistoryChecks {
                 db.execSQL("INSERT INTO samples (session,time,probe,room,humidity,fan_setting) VALUES (1,"+START+",36.5,22,50,4)");
                 db.execSQL("INSERT INTO cursors VALUES ('synthetic-board',42)");
                 // These empty tables belong only to this invocation's disposable version-7 fixture.
-                db.execSQL("DROP TABLE oura_sleep");db.execSQL("DROP TABLE oura_imports");db.setVersion(7);
+                db.execSQL("DROP TABLE oura_sleep");db.execSQL("DROP TABLE oura_imports");db.execSQL("DROP TABLE phone_recordings");db.execSQL("DROP TABLE recording_intent");db.setVersion(7);
             }
             Store.Session night;
             try(Store store=new Store(context,name)){
-                check(store.getReadableDatabase().getVersion()==8,"Additive 7 -> 8 migration");night=store.sessions().get(0);
+                check(store.getReadableDatabase().getVersion()==9,"Additive 7 -> 9 migration");night=store.sessions().get(0);
                 check(store.points(1).size()==1&&store.points(1).get(0).probe==36.5&&store.cursor("synthetic-board")==42,"Legacy recording and cursor preserved");
                 check(!store.oura(night).fetched,"Uncached night remains eligible for initial import");
                 String before=store.csv(1);OuraData.Period first=period("synthetic-oura",0.5);
@@ -57,7 +57,7 @@ final class OuraHistoryChecks {
             OuraData.Period synthetic=period("graph-only",0.5);Throwable[] failure={null};
             test.runOnMainSync(()->{try{graph(context,synthetic);}catch(Throwable e){failure[0]=e;}});
             if(failure[0]!=null)throw new AssertionError("Off-screen Oura graph checks",failure[0]);
-            return "PASS: additive 7 -> 8 migration, preserved sensor rows/export/cursor, idempotent refresh, source revisions, offline reopen, empty cache, gap rendering, independent BPM/temperature scale and height, zoom/pan preservation, Central DST; synthetic isolated fixtures only\n";
+            return "PASS: additive 7 -> 9 migration, preserved sensor rows/export/cursor, idempotent refresh, source revisions, offline reopen, empty cache, gap rendering, independent BPM/temperature scale and height, zoom/pan preservation, Central DST; synthetic isolated fixtures only\n";
         }finally{context.deleteDatabase(name);}
     }
     private static void graph(Context context,OuraData.Period period)throws Exception{

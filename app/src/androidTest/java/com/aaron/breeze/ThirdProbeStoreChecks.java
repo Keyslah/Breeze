@@ -57,7 +57,7 @@ public final class ThirdProbeStoreChecks {
             db.execSQL("INSERT INTO cursors VALUES ('old-controller',11)");
             db.execSQL("INSERT INTO feelings VALUES (5,7,1800000000000,'Cold',7,'COLD',-7,'2027-01-15T02:00:00-06:00','America/Chicago',0,'original-token','old-controller',10)");
             db.setVersion(4);db.close();
-            migrated=new Store(context,name);check(migrated.getReadableDatabase().getVersion()==8,"Version 4 upgrades to version 8");
+            migrated=new Store(context,name);check(migrated.getReadableDatabase().getVersion()==9,"Version 4 upgrades to version 9");
             List<Store.Session> sessions=migrated.sessions();check(sessions.size()==1&&sessions.get(0).id==7&&sessions.get(0).count==1&&sessions.get(0).label.equals("Original night")&&sessions.get(0).end==1800000010000L,"Migration preserves the existing night and sample count");
             Store.Point point=migrated.points(7).get(0);check(point.probe==30.5&&point.room==22.5&&point.humidity==60&&point.secondProbe==31.5&&point.phase==2&&Double.isNaN(point.thirdProbe),"Migration preserves every old temperature and leaves D2 missing");
             check(migrated.cursor("old-controller")==11&&migrated.weather(7).get(0).probe==16.5&&migrated.weatherLocation(7).equals("Milwaukee"),"Migration preserves download cursor and weather");

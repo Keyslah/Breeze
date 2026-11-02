@@ -34,6 +34,7 @@ public class MainActivity extends Activity {
     private final List<TextView> learnedLabels=new ArrayList<>();
     private Button startProbeTest,onProbes,offProbes,stopProbeTest;
     private Button sessionButton;
+    private PhoneRecording phoneRecording;
     private TextView receiverLatest,receiverExternal,receiverLed,receiverSendStatus;
     private Toast manualFeedback;
     private Button irReceiverTestButton;
@@ -93,7 +94,7 @@ public class MainActivity extends Activity {
     private final BroadcastReceiver updates=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){if(!handler.hasCallbacks(queuedRefresh))handler.postDelayed(queuedRefresh,16);}};
     private final Runnable tick=new Runnable(){public void run(){reconcileBluetooth();if(activityResumed&&!getSystemService(KeyguardManager.class).isKeyguardLocked())RecordingVoiceController.reconcile(MainActivity.this);refresh();handler.postDelayed(this,1500);}};
     private long exportSession=-1;
-    @Override public void onCreate(Bundle state){super.onCreate(state);store=new Store(this);
+    @Override public void onCreate(Bundle state){super.onCreate(state);store=new Store(this);phoneRecording=PhoneRecording.get(this);
         Settings.logicProfile(this);
         if(!Settings.prefs(this).contains("fanAnchor"))Settings.prefs(this).edit().putInt("fanAnchor",1).apply();
         if(!Settings.prefs(this).contains("place"))Settings.prefs(this).edit().putString("query","53214").putString("place","Milwaukee, Wisconsin • ZIP 53214 (city weather)").putString("latitude","43.0389").putString("longitude","-87.90647").apply();
@@ -264,6 +265,8 @@ public class MainActivity extends Activity {
         requestPermissions(permissions.toArray(new String[0]),VOICE_PERMISSION_REQUEST);return false;
     }
     private void startRecordingWithVoice(boolean probeTest){
+        if(!probeTest){startPhoneRecording(false);return;}
+        if(phoneRecording.state().active){toast("Stop the current recording before starting a probe test.");return;}
         if(!service())return;BreezeService controller=BreezeService.current;
         if(RecordingVoiceController.isStarting()){toast("Waiting for recording to start.");return;}
         if(!controller.fresh()){toast("Wait for a fresh controller reading.");return;}
@@ -271,9 +274,21 @@ public class MainActivity extends Activity {
         if(!controller.sensorFirmware||(probeTest&&!controller.freshFan())){toast("Connect the updated controller first.");return;}
         if(!controller.latest.storageReady()){toast("Wait for controller storage to be ready.");controller.download();return;}
         if(RecordingVoiceController.canStartListening(this)&&!voicePermission(probeTest?2:1))return;
-        try{RecordingVoiceController.prepareStart(this);followLatestHistory=true;selected=-1;if(probeTest)controller.startContactTest();else controller.startSession();}
+        try{RecordingVoiceController.prepareStart(this);startPhoneRecording(true);}
         catch(RuntimeException failure){error("Could not prepare voice listening. Keep Breeze open and try again. "+failure.getMessage());}
     }
+    private void startPhoneRecording(boolean probeTest){
+        phoneRecording.setActive(true,failure->{
+            if(!failure.isEmpty()){error(failure);return;}
+            followLatestHistory=true;selected=phoneRecording.state().session;
+            BreezeService controller=BreezeService.current;
+            if(probeTest&&controller!=null)controller.startContactTest();
+            // Permission or microphone failure never vetoes a saved recording session.
+            if(activityResumed)RecordingVoiceController.reconcile(this);
+            refresh();
+        });refresh();
+    }
+    private void stopPhoneRecording(){phoneRecording.setActive(false,failure->{if(!failure.isEmpty())error(failure);refresh();});refresh();}
     private void sendFan(int action,int value,int argument){if(service()){
         BreezeService controller=BreezeService.current;
         FanCommandTrace.record(this,"click tab="+tab+" action="+action+" value="+value+" ready="+controller.manualIrReady());
@@ -319,7 +334,7 @@ public class MainActivity extends Activity {
         startProbeTest=button("Start probe test",true,()->startRecordingWithVoice(true));test.addView(startProbeTest,new LinearLayout.LayoutParams(-1,dp(48)));gap(test,7);
         onProbes=button("Mark: lying on probes",false,()->sendFan(Protocol.MARK_TEST,2,0));test.addView(onProbes,new LinearLayout.LayoutParams(-1,dp(48)));gap(test,7);
         offProbes=button("Mark: off probes",false,()->sendFan(Protocol.MARK_TEST,3,0));test.addView(offProbes,new LinearLayout.LayoutParams(-1,dp(48)));gap(test,7);
-        stopProbeTest=button("Stop probe test",false,()->{if(service())BreezeService.current.control(Protocol.STOP_RECORDING,0);});test.addView(stopProbeTest,new LinearLayout.LayoutParams(-1,dp(48)));
+        stopProbeTest=button("Stop probe test",false,this::stopPhoneRecording);test.addView(stopProbeTest,new LinearLayout.LayoutParams(-1,dp(48)));
     }
     private void syncFan(){
         LinearLayout form=col();form.setPadding(dp(20),dp(8),dp(20),dp(8));form.addView(text("Read the actual fan setting. Choose 0 only when the fan is off; use Normal/manual mode.",15,INK));
@@ -337,7 +352,7 @@ public class MainActivity extends Activity {
             for(Button b:new Button[]{learn,test,clear})r.addView(b,new LinearLayout.LayoutParams(0,dp(48),1));item.addView(r);learnButtons.add(learn);testButtons.add(test);clearButtons.add(clear);
         }
     }
-    private void sessionAction(){if(!service())return;BreezeService b=BreezeService.current;if(!b.fresh()){toast("Wait for a fresh controller reading.");return;}if(b.latest.active())b.control(Protocol.STOP_RECORDING,0);else startRecordingWithVoice(false);}
+    private void sessionAction(){if(!phoneRecording.ready())return;RecordingIntent intent=phoneRecording.state();BreezeService b=BreezeService.current;if(intent.active||!intent.known&&b!=null&&b.fresh()&&b.latest.active())stopPhoneRecording();else startPhoneRecording(false);}
     private void history(){
         LinearLayout oura=card();oura.addView(bold("Oura",18,INK));ouraStatus=text(OuraConnection.status(this),13,MUTED);ouraStatus.setTag("ouraConnectionStatus");oura.addView(ouraStatus);
         two(oura,"Connect Oura",()->OuraConnection.start(this,ouraWorker,savedHistory==null?null:savedHistory.session,()->{if(ouraStatus!=null)ouraStatus.setText(OuraConnection.status(this));}),"Refresh Oura",()->requestOura(true));
@@ -442,7 +457,7 @@ public class MainActivity extends Activity {
     private void chooseRecordedNight(){
         List<Store.Session> nights=savedHistory==null?List.of():savedHistory.sessions;if(nights.isEmpty()){build();return;}
         String[] labels=new String[nights.size()];int current=0;
-        for(int i=0;i<nights.size();i++){Store.Session night=nights.get(i);labels[i]=OuraData.time(night.start)+"\n"+night.count+" readings"+(night.end==0?" · open / interrupted":" · ended "+OuraData.time(night.end));if(night.id==selected)current=i;}
+        for(int i=0;i<nights.size();i++){Store.Session night=nights.get(i);labels[i]=OuraData.time(night.start)+"\n"+night.count+" readings"+(night.end==0?(night.phoneOwned?" · recording":" · open / interrupted"):" · ended "+OuraData.time(night.end));if(night.id==selected)current=i;}
         new AlertDialog.Builder(this).setTitle("Choose recorded night ("+nights.size()+")").setSingleChoiceItems(labels,current,(dialog,which)->{selected=nights.get(which).id;followLatestHistory=false;dialog.dismiss();build();}).setNegativeButton("Cancel",null).show();
     }
     private EditText logicInput(LinearLayout parent,String label,String description,String value,int inputType){
@@ -754,8 +769,11 @@ public class MainActivity extends Activity {
         }
         if(setupLogicButton!=null){boolean known=b!=null&&!b.logicNeedsFirmware&&b.freshLogic();setupLogicButton.setText(!known?"Logic":b.logic.automatic()?"Pause Logic":"Resume Logic");boolean ready=b!=null&&b.homeLogicReady();setupLogicButton.setEnabled(ready);setupLogicButton.setAlpha(ready?1f:0.5f);}
         refreshLogicApply(b);
-        if(sessionButton!=null){textIfChanged(sessionButton,r!=null&&r.active()?"Stop recording":RecordingVoiceController.isStarting()?"Starting recording…":"Start recording");if(sessionButton!=homeTouchedButton)sessionButton.setEnabled(fresh&&b.sensorFirmware&&(!"Home".equals(tab)||!b.irFirmware||b.manualIrReady())&&(r.active()||r.storageReady()&&!RecordingVoiceController.isStarting()));}
-        if(status!=null){status.setText(r==null?"Waiting for controller":!b.sensorFirmware?"Update the controller to sensor firmware":(r.active()?"Recording on controller":"Live readings · recording stopped")+(r.error==0?"":" · "+Protocol.error(r.error)));transfer.setText(b==null?"Records stay on the controller until downloaded and confirmed.":b.transfer);}
+        if(sessionButton!=null||status!=null){
+        RecordingIntent recording=phoneRecording.state();
+        if(sessionButton!=null){textIfChanged(sessionButton,recording.active||!recording.known&&r!=null&&r.active()?"Stop recording":"Start recording");if(sessionButton!=homeTouchedButton)sessionButton.setEnabled(phoneRecording.ready());}
+        if(status!=null){status.setText(!phoneRecording.error().isEmpty()?phoneRecording.error():recording.active?(fresh&&r.active()?"Recording · controller connected":"Recording · waiting for available sensor readings"):"Recording stopped"+(r==null?" · controller disconnected":" · live readings"));transfer.setText(b==null?"Records stay on the controller until downloaded and confirmed.":b.transfer);}
+        }
         if(graph!=null&&savedHistory!=null&&savedHistory.includesGraph&&savedHistory.selected()==selected&&renderedHistory!=savedHistory){
             graph.data(selected,savedHistory.points,savedHistory.weather,fahrenheit,visibleSeries);
             graph.dreoTemperatures(savedHistory.dreo);graph.feelings(savedHistory.feelings);renderedHistory=savedHistory;
@@ -802,7 +820,7 @@ public class MainActivity extends Activity {
         for(Button button:targetButtons)button.setEnabled(available&&!learning&&f.synced()&&!f.busy());
         if(learningStatus!=null){String result=f==null?"Waiting for IR-controller telemetry":learning?"Point the Dreo remote at the ESP32 and press "+Protocol.COMMANDS[f.learning]+".":switch(f.learnState){case 2->"Saved "+(f.resultSlot<Protocol.COMMANDS.length?Protocol.COMMANDS[f.resultSlot]:"command")+" on controller";case 3->"Learning timed out. Previous command retained.";case 4->"Learning canceled.";case 5->"Capture/save failed. "+Protocol.error(f.error);default->"Choose a button to learn.";};learningStatus.setText(result+(f!=null&&f.error!=0?"\n"+Protocol.error(f.error):""));}
         for(int i=0;i<learnButtons.size();i++){boolean learned=f!=null&&f.has(i);learnedLabels.get(i).setText(f==null?"Waiting for controller":learned?"Learned":"Not learned");learnButtons.get(i).setText(learned?"Relearn":"Learn");learnButtons.get(i).setEnabled(available);testButtons.get(i).setEnabled(manualAvailable&&learned);clearButtons.get(i).setEnabled(available&&!learning&&learned);}
-        if(testStatus!=null){boolean recording=r!=null&&r.active();testStatus.setText(recording?"Recording raw probe data"+(f!=null&&f.phase>0?" · "+Store.phaseName(f.phase):""):"Ready to record raw probe data");startProbeTest.setEnabled(available&&!recording&&!RecordingVoiceController.isStarting());onProbes.setEnabled(available&&recording&&f.phase>0);offProbes.setEnabled(available&&recording&&f.phase>0);stopProbeTest.setEnabled(available&&recording);}
+        if(testStatus!=null){RecordingIntent intent=phoneRecording.state();boolean controllerRecording=r!=null&&r.active(),recording=intent.active||!intent.known&&controllerRecording;testStatus.setText(recording?(controllerRecording?"Recording raw probe data"+(f!=null&&f.phase>0?" · "+Store.phaseName(f.phase):""):"Recording · waiting for available sensor readings"):"Ready to record raw probe data");startProbeTest.setEnabled(available&&!recording&&!RecordingVoiceController.isStarting()&&phoneRecording.ready());onProbes.setEnabled(available&&controllerRecording&&f.phase>0);offProbes.setEnabled(available&&controllerRecording&&f.phase>0);stopProbeTest.setEnabled(phoneRecording.ready()&&recording);}
     }
     private void searchPlace(String query){if(query.isEmpty())return;toast("Looking up "+query+"…");worker.execute(()->{try{List<Weather.Place> p=Weather.search(query);runOnUiThread(()->{if(isFinishing()||isDestroyed())return;if(p.isEmpty()){error("No matching location. Try the city name.");return;}new AlertDialog.Builder(this).setTitle("Choose weather location").setItems(p.stream().map(x->x.label).toArray(String[]::new),(d,w)->{Weather.Place place=p.get(w);Settings.prefs(this).edit().putString("query",query).putString("place",place.label).putString("latitude",""+place.lat).putString("longitude",""+place.lon).apply();build();}).show();});}catch(Exception e){runOnUiThread(()->error(e.getMessage()));}});}
     private void fetchWeather(Store.Session s){String lat=Settings.prefs(this).getString("latitude","");if(lat.isEmpty()){new AlertDialog.Builder(this).setTitle("Choose your weather location").setMessage("Search ZIP 53214 in Setup first.").setPositiveButton("Open Setup",(d,w)->{tab="Setup";build();}).show();return;}Weather.Place p=new Weather.Place();p.lat=Double.parseDouble(lat);p.lon=Double.parseDouble(Settings.prefs(this).getString("longitude","0"));p.label=Settings.prefs(this).getString("place","");toast("Fetching outdoor weather…");worker.execute(()->{try{int count=Weather.fetch(store,s,p);runOnUiThread(()->{toast("Added "+count+" hourly outdoor readings.");if(!isDestroyed())build();});}catch(Exception e){runOnUiThread(()->error("Weather unavailable: "+e.getMessage()));}});}

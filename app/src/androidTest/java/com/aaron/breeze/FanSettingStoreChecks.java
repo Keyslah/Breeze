@@ -63,7 +63,7 @@ public final class FanSettingStoreChecks {
             db.execSQL("INSERT INTO weather VALUES (7,1800000000000,16.5,70,'Milwaukee')");
             db.execSQL("INSERT INTO feelings VALUES (5,7,1800000000000,'Cold',7,'COLD',-7,'2027-01-15T02:00:00-06:00','America/Chicago',0,'saved-token','old-board',11)");
             db.setVersion(5);db.close();store=new Store(context,name);
-            check(store.getReadableDatabase().getVersion()==8,"Version5 upgrades additively to8");
+            check(store.getReadableDatabase().getVersion()==9,"Version5 upgrades additively to9");
             List<Store.Point> points=store.points(7);
             check(points.size()==2&&Double.isNaN(points.get(0).fanSetting)&&Double.isNaN(points.get(1).fanSetting),"Neither legacy speed0 nor legacy speed3 invents a fan setting");
             check(points.get(0).speed==0&&points.get(1).speed==3&&points.get(0).thirdProbe==34.67&&points.get(0).secondProbe==31.5&&points.get(0).phase==2,"All old readings and legacy speed fields survive");

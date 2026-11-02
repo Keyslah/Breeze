@@ -31,7 +31,7 @@ public final class DreoTemperatureStoreChecks {
             legacy.setVersion(6);legacy.close();
 
             store=new Store(context,name);reader=new Store(context,name);
-            check(store.getReadableDatabase().getVersion()==8,"Schema6 upgrades to8");
+            check(store.getReadableDatabase().getVersion()==9,"Schema6 upgrades to9");
             check(store.sessions().size()==1&&store.sessions().get(0).count==1,"Migration preserves session and sample count");
             Store.Point sensor=store.points(1).get(0);
             check(sensor.probe==36&&sensor.secondProbe==35&&sensor.thirdProbe==34&&sensor.fanSetting==4,"Migration preserves all three probes and fan setting");

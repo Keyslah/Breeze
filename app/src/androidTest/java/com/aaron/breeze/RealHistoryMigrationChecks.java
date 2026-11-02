@@ -71,7 +71,7 @@ final class RealHistoryMigrationChecks {
                 check(db.getVersion()==6,"Offline source must be schema 6");integrity(db);before=fingerprints(db);
             }
             store=new Store(context,name);SQLiteDatabase migrated=store.getWritableDatabase();
-            check(migrated.getVersion()==8,"Migration must change schema 6 -> 8");integrity(migrated);
+            check(migrated.getVersion()==9,"Migration must change schema 6 -> 9");integrity(migrated);
             Map<String,Fingerprint> after=fingerprints(migrated);StringBuilder counts=new StringBuilder();
             for(String table:TABLES){
                 Fingerprint old=before.get(table),now=after.get(table);
