@@ -129,6 +129,13 @@ service. No data is deleted merely by reading this policy.
 
 ## Policy updates and contact
 
+The project website is hosted by GitHub Pages. It contains informational pages
+and does not provide an Oura sign-in form, collect health readings, or use
+analytics scripts, tracking cookies, or third-party font services. GitHub
+receives ordinary web requests, including your IP address, when you visit the
+site; its handling of that information is governed by the
+[GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+
 Changes to this policy will be published at this same address with an updated
 effective date. The repository's file history records prior versions.
 

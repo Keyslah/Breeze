@@ -1,6 +1,6 @@
 # Breeze
 
-[Privacy policy](PRIVACY.md)
+[Website](https://keyslah.github.io/Breeze/) · [Privacy policy](PRIVACY.md) · [Terms of service](TERMS.md)
 
 Android sensor monitor and XIAO ESP32C6 firmware, with learned manual Dreo IR controls and computer-driven Wi-Fi firmware updates.
 
