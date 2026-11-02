@@ -18,6 +18,8 @@ public class GraphView extends View {
     private static final int MUTED=0xffa6b9ac,INK=0xffe5eee6;
     private List<Store.Point> points=new ArrayList<>(),outdoor=new ArrayList<>(),dreoTemperatures=new ArrayList<>();
     private List<Store.FeelingEntry> feelings=new ArrayList<>();
+    private List<OuraData.Period> ouraPeriods=List.of();
+    private int ouraMask;private long ouraStart,ouraEnd;
     private final Paint paint=new Paint(3);
     private boolean fahrenheit=true;
     private boolean smoothHighestBody;
@@ -44,7 +46,7 @@ public class GraphView extends View {
         public final String timestamp,note;public final List<ReadingValue> values;
         public final ReadingValue feeling;
         public ReadingDetails(long time,List<ReadingValue> values,String note){this(time,values,note,null);}
-        public ReadingDetails(long time,List<ReadingValue> values,String note,ReadingValue feeling){this.time=time;this.timestamp=new SimpleDateFormat("MMM d, yyyy · h:mm:ss a",Locale.US).format(new Date(time));this.values=List.copyOf(values);this.note=note;this.feeling=feeling;}
+        public ReadingDetails(long time,List<ReadingValue> values,String note,ReadingValue feeling){this.time=time;SimpleDateFormat tf=new SimpleDateFormat("MMM d, yyyy · h:mm:ss a z",Locale.US);tf.setTimeZone(TimeZone.getTimeZone("America/Chicago"));this.timestamp=tf.format(new Date(time));this.values=List.copyOf(values);this.note=note;this.feeling=feeling;}
     }
     private ReadingDetailsListener readingDetailsListener;
     public void setReadingDetailsListener(ReadingDetailsListener listener){readingDetailsListener=listener;notifyReadingDetails();}
@@ -76,7 +78,7 @@ public class GraphView extends View {
         long inspected=selected>=0&&selected<points.size()?points.get(selected).time:Long.MIN_VALUE;
         double oldStart=windowStart,oldSpan=windowSpan();
         points=p;outdoor=o;fahrenheit=f;visible=mask&ALL_SERIES;sessionId=night;refreshHighestBodySmoothing();
-        if(changed){feelings=new ArrayList<>();dreoTemperatures=new ArrayList<>();selectedFeeling=-1;}
+        if(changed){feelings=new ArrayList<>();dreoTemperatures=new ArrayList<>();ouraPeriods=List.of();selectedFeeling=-1;}
         if(!hasTimeline()){hasWindow=false;selected=-1;}
         else if(changed||!hasWindow){selected=-1;resetZoom();}
         else{
@@ -98,17 +100,24 @@ public class GraphView extends View {
         else if(wasFull)setWindow(fullStart(),fullSpan());else setWindow(oldStart,oldSpan);
         notifyReadingDetails();invalidate();
     }
-    private boolean hasTimeline(){return !points.isEmpty()||!feelings.isEmpty();}
+    void oura(List<OuraData.Period> periods,int mask,long start,long end){
+        boolean wasFull=!hasWindow||!isZoomed();double oldStart=windowStart,oldSpan=windowSpan();
+        ouraPeriods=periods;ouraMask=mask;ouraStart=start;ouraEnd=end>start?end:System.currentTimeMillis();
+        if(hasTimeline()){if(!hasWindow||wasFull)setWindow(fullStart(),fullSpan());else setWindow(oldStart,oldSpan);}
+        invalidate();
+    }
+    int ouraHeightDp(){return OuraPlot.heightDp(ouraPeriods,ouraMask);}
+    private boolean hasTimeline(){return !points.isEmpty()||!feelings.isEmpty()||!ouraPeriods.isEmpty();}
     public boolean isZoomed(){return hasWindow&&hasTimeline()&&windowSpan()<fullSpan()-1;}
     double visibleStartTime(){return windowStart;}
     double visibleEndTime(){return windowEnd;}
-    private double fullStart(){double first=points.isEmpty()?Double.POSITIVE_INFINITY:points.get(0).time;for(Store.FeelingEntry entry:feelings)first=Math.min(first,entry.time);return Double.isFinite(first)?first:0;}
-    private double fullEnd(){double last=points.isEmpty()?Double.NEGATIVE_INFINITY:points.get(points.size()-1).time;for(Store.FeelingEntry entry:feelings)last=Math.max(last,entry.time);return Math.max(fullStart()+MIN_WINDOW_MS,last);}
+    private double fullStart(){double first=points.isEmpty()?Double.POSITIVE_INFINITY:points.get(0).time;for(Store.FeelingEntry entry:feelings)first=Math.min(first,entry.time);return Double.isFinite(first)?first:ouraStart;}
+    private double fullEnd(){double last=points.isEmpty()?Double.NEGATIVE_INFINITY:points.get(points.size()-1).time;for(Store.FeelingEntry entry:feelings)last=Math.max(last,entry.time);if(!Double.isFinite(last))last=ouraEnd;return Math.max(fullStart()+MIN_WINDOW_MS,last);}
     private double fullSpan(){return fullEnd()-fullStart();}
     private double windowSpan(){return windowEnd-windowStart;}
     private float plotLeft(){return dp(36);}
     private float plotRight(){return getWidth()-dp(36);}
-    private float chartBottom(){return getHeight()-dp(26);}
+    private float chartBottom(){return getHeight()-dp(26+ouraHeightDp());}
     private float sensorBottom(){return chartBottom()-(feelings.isEmpty()?0:dp(120));}
     float fanSettingY(double setting){return sensorBottom()-(sensorBottom()-dp(30))*(float)setting/FanSetting.MAX;}
     private float feelingTop(){return chartBottom()-dp(80);}
@@ -287,7 +296,8 @@ public class GraphView extends View {
         else if(visible==0)text(c,"Check a reading below to show it.",l,top+dp(30),MUTED,12);
         int previousPhase=0;for(Store.Point point:points){if(point.phase!=0&&point.phase!=previousPhase&&point.time>=start&&point.time<=end){float x=l+(r-l)*(float)((point.time-start)/(end-start));paint.setColor(0xff8ea596);paint.setStrokeWidth(dp(1));c.drawLine(x,top,x,bottom,paint);String label=point.phase==1?"Baseline":point.phase==2?"On":"Off";text(c,label,Math.min(x+dp(3),r-dp(38)),top+dp(12),0xffd3dfd4,9);}previousPhase=point.phase;}
         fanLine(c,l,r,top,bottom,humidity||ambient);feelingMarkers(c,l,r,top,bottom);
-        SimpleDateFormat tf=new SimpleDateFormat(end-start<=120000?"h:mm:ss a":"h:mm a",Locale.US);text(c,tf.format(new Date((long)start)),l,footer+dp(18),MUTED,10);String et=tf.format(new Date((long)end));paint.setTextSize(dp(10));text(c,et,r-paint.measureText(et),footer+dp(18),MUTED,10);
+        SimpleDateFormat tf=new SimpleDateFormat(end-start<=120000?"h:mm:ss a z":"h:mm a z",Locale.US);tf.setTimeZone(TimeZone.getTimeZone("America/Chicago"));text(c,tf.format(new Date((long)start)),l,footer+dp(18),MUTED,10);String et=tf.format(new Date((long)end));paint.setTextSize(dp(10));text(c,et,r-paint.measureText(et),footer+dp(18),MUTED,10);
+        OuraPlot.draw(c,ouraPeriods,ouraMask,footer+dp(26),l,r,getResources().getDisplayMetrics().density,time->l+(r-l)*(float)((time-windowStart)/windowSpan()));
         if(selected>=0){
             Store.Point p=points.get(selected);float x=l+(r-l)*(float)((p.time-start)/(end-start));paint.setColor(INK);paint.setStrokeWidth(dp(1));c.save();c.clipRect(l,top,r,bottom);c.drawLine(x,top,x,bottom,paint);c.restore();
         }

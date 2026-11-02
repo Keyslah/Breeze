@@ -14,12 +14,15 @@ import org.json.JSONObject;
 
 /** User-triggered connection work only; no polling or background service. */
 final class OuraConnection {
+    private static final java.util.concurrent.atomic.AtomicBoolean IMPORTING=new java.util.concurrent.atomic.AtomicBoolean();
+    static boolean busy(){return IMPORTING.get();}
     static SharedPreferences prefs(Context c){return c.getApplicationContext().getSharedPreferences("oura_connection",Context.MODE_PRIVATE);}
     static String status(Context c){return prefs(c).getString("status","Connect Oura to import your completed sleep periods.");}
     static void status(Context c,String message){prefs(c).edit().putString("status",message).apply();}
+    static String status(Context c,long session){return prefs(c).getLong("statusSession",-1)<0||prefs(c).getLong("statusSession",-1)==session?status(c):"Ready to refresh Oura for this recorded night.";}
 
     static void start(Activity activity, ExecutorService worker, Store.Session session, Runnable changed){
-        status(activity,"Preparing Oura sign-in…");changed.run();
+        prefs(activity).edit().putLong("statusSession",-1).apply();status(activity,"Preparing Oura sign-in…");changed.run();
         long start=session==null?0:session.start,end=session==null?0:session.end;
         worker.execute(()->{
             try {
@@ -35,13 +38,19 @@ final class OuraConnection {
     }
 
     static void probe(Context context) {
+        importNight(context,null);
+    }
+    static void importNight(Context context,Store.Session session){
+        if(!IMPORTING.compareAndSet(false,true))return;
+        prefs(context).edit().putLong("statusSession",session==null?-1:session.id).apply();
         status(context,"Checking Oura for a completed sleep period…");
-        try {
-            JSONObject report=new OuraProbe(context).run();
+        try(Store store=new Store(context)) {
+            JSONObject report=session==null?new OuraProbe(context).run():new OuraProbe(context).run(store,session);
             write(context,"oura-import-status.json",report);
             status(context,report.getString("message"));
         }catch(java.io.IOException expected){status(context,expected.getMessage());}
         catch(Exception failure){status(context,"Oura data could not be checked. Try Refresh Oura again.");}
+        finally{IMPORTING.set(false);}
     }
 
     static void write(Context context,String filename,JSONObject value) throws java.io.IOException {

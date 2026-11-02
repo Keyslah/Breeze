@@ -35,6 +35,8 @@ public class StoreTestRunner extends Instrumentation {
     @Override public void onStart(){Bundle result=new Bundle();Context c=getTargetContext();String name="temporary-transfer-test-"+System.nanoTime()+".db";Store s=null;try{
         if(focusedCheck.equals("ouraCloudInspection")){result.putString("stream",OuraCloudInspection.run(c));finish(-1,result);return;}
         if(focusedCheck.equals("ouraAuth")){result.putString("stream",OuraAuthChecks.run(c));finish(-1,result);return;}
+        if(focusedCheck.equals("ouraHistory")){result.putString("stream",OuraHistoryChecks.run(this));finish(-1,result);return;}
+        if(focusedCheck.equals("ouraRefreshSelected")){OuraConnection.probe(c);result.putString("stream",OuraConnection.status(c)+"\n");finish(-1,result);return;}
         if(focusedCheck.equals("dreoTemperature")){result.putString("stream",DreoTemperatureStoreChecks.run(this));finish(-1,result);return;}
         if(focusedCheck.equals("historyRefresh")){result.putString("stream",HistoryRefreshChecks.run(this));finish(-1,result);return;}
         if(focusedCheck.equals("realHistoryMigration")){result.putString("stream",RealHistoryMigrationChecks.run(this));finish(-1,result);return;}

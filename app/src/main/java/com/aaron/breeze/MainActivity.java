@@ -44,6 +44,11 @@ public class MainActivity extends Activity {
     private TextView doubleHitStatus;
     private TextView dreoStatus;
     private TextView ouraStatus;
+    private OuraHistoryView ouraReadings;
+    private int ouraVisible=OuraData.ALL;
+    private boolean ouraQueued;
+    private final Set<Long> ouraAttempted=new HashSet<>();
+    private final ExecutorService ouraWorker=Executors.newSingleThreadExecutor();
     private String doubleHitError="";
     private Button setupLogicButton,logicProfileButton;
     private Runnable logicPreview;
@@ -93,6 +98,7 @@ public class MainActivity extends Activity {
         if(!Settings.prefs(this).contains("fanAnchor"))Settings.prefs(this).edit().putInt("fanAnchor",1).apply();
         if(!Settings.prefs(this).contains("place"))Settings.prefs(this).edit().putString("query","53214").putString("place","Milwaukee, Wisconsin • ZIP 53214 (city weather)").putString("latitude","43.0389").putString("longitude","-87.90647").apply();
         fahrenheit=true;visibleSeries=Settings.historyVisibleSeries(Settings.prefs(this));
+        ouraVisible=Settings.prefs(this).getInt("historyOuraVisible",OuraData.ALL)&OuraData.ALL;
         if(state!=null){tab=state.getString("tab","Home");if(!Arrays.asList("Home","Fan","Learn Remote","History","Setup").contains(tab))tab="Home";selected=state.getLong("selected",-1);followLatestHistory=state.getBoolean("followLatestHistory",true);exportSession=state.getLong("exportSession",-1);pendingVoiceAction=state.getInt("pendingVoiceAction",0);pendingBluetoothAction=state.getInt("pendingBluetoothAction",0);}
         if(getIntent().getBooleanExtra("showOuraHistory",false)){tab="History";getIntent().removeExtra("showOuraHistory");}
         build();
@@ -112,7 +118,7 @@ public class MainActivity extends Activity {
         BreezeService controller=BreezeService.current;
         if((controller==null||!controller.visibleForBluetooth())&&!Settings.prefs(this).getString("device","").isEmpty())BreezeService.startForVisibleUi(this,false);
     }
-    @Override protected void onDestroy(){activityDestroyed=true;handler.removeCallbacks(loadSavedHistory);handler.removeCallbacks(queuedRefresh);disarmLogicForm();if(manualFeedback!=null)manualFeedback.cancel();worker.execute(()->{historyWorker.execute(store::close);historyWorker.shutdown();});worker.shutdown();super.onDestroy();}
+    @Override protected void onDestroy(){activityDestroyed=true;handler.removeCallbacks(loadSavedHistory);handler.removeCallbacks(queuedRefresh);disarmLogicForm();if(manualFeedback!=null)manualFeedback.cancel();worker.execute(()->{historyWorker.execute(store::close);historyWorker.shutdown();});worker.shutdown();ouraWorker.shutdown();super.onDestroy();}
     private int dp(float v){return Math.round(v*getResources().getDisplayMetrics().density);}
     private LinearLayout col(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
     private LinearLayout row(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.HORIZONTAL);l.setGravity(Gravity.CENTER_VERTICAL);return l;}
@@ -131,6 +137,7 @@ public class MainActivity extends Activity {
         doubleHitTimeout=null;doubleHitStatus=null;doubleHitError="";
         dreoStatus=null;
         ouraStatus=null;
+        ouraReadings=null;
         liveReadings=null;homeLogicButton=null;homeRemoteButtons.clear();homeTouchedButton=null;homeTouchGeneration++;homeMessage="";
         currentFanSetting=null;currentFanDisplayed="";
         receiverLatest=null;receiverExternal=null;receiverLed=null;receiverSendStatus=null;irReceiverTestButton=null;irReceiverTestStatus=null;fanUtilityButtons.clear();
@@ -333,17 +340,18 @@ public class MainActivity extends Activity {
     private void sessionAction(){if(!service())return;BreezeService b=BreezeService.current;if(!b.fresh()){toast("Wait for a fresh controller reading.");return;}if(b.latest.active())b.control(Protocol.STOP_RECORDING,0);else startRecordingWithVoice(false);}
     private void history(){
         LinearLayout oura=card();oura.addView(bold("Oura",18,INK));ouraStatus=text(OuraConnection.status(this),13,MUTED);ouraStatus.setTag("ouraConnectionStatus");oura.addView(ouraStatus);
-        two(oura,"Connect Oura",()->OuraConnection.start(this,worker,savedHistory==null?null:savedHistory.session,()->{if(ouraStatus!=null)ouraStatus.setText(OuraConnection.status(this));}),"Refresh Oura",()->{worker.execute(()->{OuraConnection.probe(this);handler.post(()->{if(ouraStatus!=null)ouraStatus.setText(OuraConnection.status(this));});});ouraStatus.setText("Checking Oura…");});
+        two(oura,"Connect Oura",()->OuraConnection.start(this,ouraWorker,savedHistory==null?null:savedHistory.session,()->{if(ouraStatus!=null)ouraStatus.setText(OuraConnection.status(this));}),"Refresh Oura",()->requestOura(true));
         unassignedFeelings=card();unassignedFeelings.setVisibility(View.GONE);
         if(!historyMatchesSelection()){LinearLayout loading=card();historyLoadingLabel=text("Loading recorded night…",15,INK);loading.addView(historyLoadingLabel);requestSavedHistory();return;}
         List<Store.Session> sessions=savedHistory.sessions;if(sessions.isEmpty()){selected=-1;LinearLayout empty=card();empty.addView(bold("Recorded nights",23,INK));empty.addView(text("No sessions yet. Connect your controller and download its records.",15,INK));addButton(empty,"Connect controller",true,this::connect);return;}
         Store.Session chosen=sessions.get(0);if(!followLatestHistory)for(Store.Session s:sessions)if(s.id==selected)chosen=s;selected=chosen.id;final Store.Session session=chosen;
         LinearLayout chart=card();LinearLayout chartTitle=row();chartTitle.setMinimumHeight(dp(40));graphHeading=bold("Recorded night",18,INK);chartTitle.addView(graphHeading,new LinearLayout.LayoutParams(-2,-2));
-        SimpleDateFormat headerTime=new SimpleDateFormat("MMM d · h:mm:ss a",Locale.US);TextView graphTime=text(headerTime.format(new Date(session.start)),15,INK);graphTime.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);graphTime.setMaxLines(2);LinearLayout.LayoutParams timeLayout=new LinearLayout.LayoutParams(0,-2,1);timeLayout.setMarginStart(dp(8));chartTitle.addView(graphTime,timeLayout);chart.addView(chartTitle);
+        SimpleDateFormat headerTime=new SimpleDateFormat("MMM d · h:mm:ss a z",Locale.US);headerTime.setTimeZone(java.util.TimeZone.getTimeZone("America/Chicago"));TextView graphTime=text(headerTime.format(new Date(session.start)),15,INK);graphTime.setGravity(Gravity.END|Gravity.CENTER_VERTICAL);graphTime.setMaxLines(2);LinearLayout.LayoutParams timeLayout=new LinearLayout.LayoutParams(0,-2,1);timeLayout.setMarginStart(dp(8));chartTitle.addView(graphTime,timeLayout);chart.addView(chartTitle);
         graph=new GraphView(this);graph.setSmoothHighestBody(Settings.historySmoothHighestBody(Settings.prefs(this)));chart.addView(graph,new LinearLayout.LayoutParams(-1,dp(346)));
         CheckBox smoothHighest=new CheckBox(this);smoothHighest.setTag("historySmoothHighestBody");smoothHighest.setText("Smooth highest body temp");smoothHighest.setTextColor(GraphView.COLORS[GraphView.HIGHEST_BODY_SERIES]);smoothHighest.setButtonTintList(ColorStateList.valueOf(GraphView.COLORS[GraphView.HIGHEST_BODY_SERIES]));smoothHighest.setChecked(Settings.historySmoothHighestBody(Settings.prefs(this)));smoothHighest.setOnCheckedChangeListener((button,checked)->{Settings.prefs(this).edit().putBoolean("historySmoothHighestBody",checked).apply();graph.setSmoothHighestBody(checked);});
         GraphReadingDetailsView readingDetails=new GraphReadingDetailsView(this);readingDetails.setVisibleSeries(visibleSeries);readingDetails.setOnSeriesChangedListener((series,checked)->{if(checked)visibleSeries|=1<<series;else visibleSeries&=~(1<<series);Settings.prefs(this).edit().putInt("historyVisibleSeries",visibleSeries).apply();graph.visibleSeries(visibleSeries);});chart.addView(readingDetails,new LinearLayout.LayoutParams(-1,-2));graph.setReadingDetailsListener(details->{readingDetails.showReading(details);graphTime.setText(headerTime.format(new Date(details==null?session.start:details.time)));graphTime.setContentDescription(details==null?date(session.start):details.timestamp);});
         content.removeView(chart);content.addView(chart,0);
+        ouraReadings=new OuraHistoryView(this,ouraVisible,mask->{ouraVisible=mask;Settings.prefs(this).edit().putInt("historyOuraVisible",mask).apply();updateOuraGraph();});chart.addView(ouraReadings);
         chart.addView(smoothHighest);
         two(chart,"Reset zoom",()->graph.resetZoom(),"Choose recorded night",this::chooseRecordedNight);
         addButton(chart,"Graph help",false,()->new AlertDialog.Builder(this).setTitle("Graph controls").setMessage("Tap for readings, pinch to zoom, drag sideways to pan. Double-tap or Reset zoom shows the whole night.\n\nHighest body temp shows the highest available D0, D1 or D2 body temperature at each recorded timestamp. It is on by default; the three individual body temperature traces start unchecked. Body readings below 90°F are excluded from the graph, its temperature range and smoothing; those intervals remain gaps. Saved raw readings are unchanged. Room temperature is separate.\n\nSmooth Highest temp averages the highest body readings within one minute before and after each sample. It smooths only the Highest trace and its labeled readout, keeps gaps, and leaves original recordings, exports and other traces unchanged. Uncheck it to see the original line.\n\nCheckboxes show or hide plotted traces; the readings remain available. Body temperature uses the right axis. Room, outdoor and Dreo temperatures share a separate left axis. Fan setting and humidity use independent scales, so neither changes the body-temperature range. Dreo temperatures are collected while this phone can reach Dreo; missing intervals stay blank. Dashed traces are hourly outdoor weather. Feeling ratings use +1 to +10 for warm and −1 to −10 for cold.").setPositiveButton("OK",null).show());
@@ -355,6 +363,26 @@ public class MainActivity extends Activity {
         outdoor.addView(text("Open-Meteo hourly weather model · CC BY 4.0",11,MUTED));
     }
     private String feelingLabel(Store.FeelingEntry entry){return ("COLD".equals(entry.state)?"Cold":"Warm")+" "+entry.intensity+" / 10";}
+    private void updateOuraGraph(){
+        if(graph==null||savedHistory==null||savedHistory.session==null)return;
+        Store.Session s=savedHistory.session;graph.oura(savedHistory.oura.periods,ouraVisible,s.start,s.end);
+        android.view.ViewGroup.LayoutParams params=graph.getLayoutParams();int height=dp(346+graph.ouraHeightDp());
+        if(params!=null&&params.height!=height){params.height=height;graph.setLayoutParams(params);}
+    }
+    private void requestOura(boolean force){
+        if(activityDestroyed||!"History".equals(tab)||ouraQueued||OuraConnection.busy())return;
+        if(savedHistory==null||savedHistory.session==null){if(force)toast("Choose a recorded night first.");return;}
+        Store.Session session=savedHistory.session;
+        if(!force&&(savedHistory.oura.fetched||!ouraAttempted.add(session.id)))return;
+        ouraQueued=true;if(ouraStatus!=null&&force)ouraStatus.setText("Refreshing Oura…");
+        ouraWorker.execute(()->{
+            try{
+                boolean ready=force;
+                if(!force)try{new OuraAccountStore(this).token();ready=true;}catch(java.io.IOException missing){/* No API request without a usable token. */}
+                if(ready)OuraConnection.importNight(this,session);
+            }finally{handler.post(()->{ouraQueued=false;if(!activityDestroyed)refresh();});}
+        });
+    }
     private String feelingTime(long time){return new SimpleDateFormat("MMM d, yyyy · h:mm:ss a",Locale.US).format(new Date(time));}
     private boolean historyMatchesSelection(){
         if(savedHistory==null||!savedHistory.includesGraph)return false;
@@ -414,7 +442,7 @@ public class MainActivity extends Activity {
     private void chooseRecordedNight(){
         List<Store.Session> nights=savedHistory==null?List.of():savedHistory.sessions;if(nights.isEmpty()){build();return;}
         String[] labels=new String[nights.size()];int current=0;
-        for(int i=0;i<nights.size();i++){Store.Session night=nights.get(i);labels[i]=date(night.start)+"\n"+night.count+" readings"+(night.end==0?" · open / interrupted":" · ended "+new SimpleDateFormat("h:mm a",Locale.US).format(new Date(night.end)));if(night.id==selected)current=i;}
+        for(int i=0;i<nights.size();i++){Store.Session night=nights.get(i);labels[i]=OuraData.time(night.start)+"\n"+night.count+" readings"+(night.end==0?" · open / interrupted":" · ended "+OuraData.time(night.end));if(night.id==selected)current=i;}
         new AlertDialog.Builder(this).setTitle("Choose recorded night ("+nights.size()+")").setSingleChoiceItems(labels,current,(dialog,which)->{selected=nights.get(which).id;followLatestHistory=false;dialog.dismiss();build();}).setNegativeButton("Cancel",null).show();
     }
     private EditText logicInput(LinearLayout parent,String label,String description,String value,int inputType){
@@ -731,9 +759,12 @@ public class MainActivity extends Activity {
         if(graph!=null&&savedHistory!=null&&savedHistory.includesGraph&&savedHistory.selected()==selected&&renderedHistory!=savedHistory){
             graph.data(selected,savedHistory.points,savedHistory.weather,fahrenheit,visibleSeries);
             graph.dreoTemperatures(savedHistory.dreo);graph.feelings(savedHistory.feelings);renderedHistory=savedHistory;
+            updateOuraGraph();if(ouraReadings!=null)ouraReadings.data(savedHistory.oura);
             if(weatherLocationLabel!=null)textIfChanged(weatherLocationLabel,savedHistory.weatherLocation.isEmpty()?Settings.prefs(this).getString("place","Choose location in Setup"):savedHistory.weatherLocation);
         }
         refreshSavedFeelings();
+        if(ouraStatus!=null)textIfChanged(ouraStatus,OuraConnection.status(this,selected));
+        if(graph!=null&&savedHistory!=null&&historyMatchesSelection())requestOura(false);
     }
     /** Unsent edits and the outcome of the last Apply stay visible; controller status never overwrites them. */
     private void refreshLogicApply(BreezeService controller){

@@ -54,6 +54,7 @@ final class HistoryRefreshChecks {
         @Override public List<Point> weather(long session){query();return List.of();}
         @Override public List<Point> dreoTemperatures(long session){query();return List.of();}
         @Override public String weatherLocation(long session){query();return location;}
+        @Override OuraData.Cache oura(Session session){query();return new OuraData.Cache(true,START,List.of());}
     }
     private static final class CountingGraph extends GraphView {
         int loads;CountingGraph(Context context){super(context);}
@@ -74,19 +75,19 @@ final class HistoryRefreshChecks {
                 ((ExecutorService)field("historyWorker").get(activity)).shutdown();field("historyWorker").set(activity,worker);field("graph").set(activity,graphs[0]);
             });
             MainActivity activity=holder[0];FakeStore store=stores[0];CountingGraph graph=graphs[0];
-            load(test,activity,worker);check(store.queries==6&&graph.loads==1,"Initial history loads one background snapshot");
+            load(test,activity,worker);check(store.queries==7&&graph.loads==1,"Initial history loads one background snapshot");
             main(test,()->{
                 Method window=GraphView.class.getDeclaredMethod("setWindow",double.class,double.class);window.setAccessible(true);window.invoke(graph,(double)(START+120000),120000d);
                 for(int count=0;count<20;count++)invoke(activity,"refresh");
-                check(store.queries==6&&graph.loads==1,"Twenty unchanged UI refreshes perform zero history queries or graph reloads");
+                check(store.queries==7&&graph.loads==1,"Twenty unchanged UI refreshes perform zero history queries or graph reloads");
                 Handler handler=(Handler)field("handler").get(activity);check(!handler.hasCallbacks((Runnable)field("loadSavedHistory").get(activity)),"Unchanged refreshes queue no history work");
                 field("activityResumed").setBoolean(activity,false);store.version++;invoke(activity,"refresh");invoke(activity,"loadSavedHistory");
-                check(worker.tasks.isEmpty()&&!handler.hasCallbacks((Runnable)field("loadSavedHistory").get(activity))&&store.queries==6,"Paused screens do not query or queue history even when the data changes");
+                check(worker.tasks.isEmpty()&&!handler.hasCallbacks((Runnable)field("loadSavedHistory").get(activity))&&store.queries==7,"Paused screens do not query or queue history even when the data changes");
                 field("activityResumed").setBoolean(activity,true);
             });
             double from=graph.visibleStartTime(),to=graph.visibleEndTime();store.version++;store.location="Updated weather place";
             main(test,()->field("weatherLocationLabel").set(activity,new TextView(test.getTargetContext())));
-            load(test,activity,worker);check(store.queries==12&&graph.loads==2,"A changed revision loads exactly one new snapshot");
+            load(test,activity,worker);check(store.queries==14&&graph.loads==2,"A changed revision loads exactly one new snapshot");
             main(test,()->check(((TextView)field("weatherLocationLabel").get(activity)).getText().toString().equals("Updated weather place"),"A completed weather refresh updates the displayed place for the same night"));
             check(graph.visibleStartTime()==from&&graph.visibleEndTime()==to,"Refreshing the same night preserves zoom");
             main(test,()->{

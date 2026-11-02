@@ -7,10 +7,9 @@ recording and historical monitoring. Its Android package is `com.aaron.breeze`.
 The project is maintained by [Keyslah](https://github.com/Keyslah) at
 [github.com/Keyslah/Breeze](https://github.com/Keyslah/Breeze).
 
-This policy covers Breeze's existing features and the optional Oura connection
-being developed for its History page. **The Oura connection is not yet available
-in the current application.** The Oura section below describes the intended
-collection and use when that connection becomes available and you authorize it.
+This policy covers Breeze's features and its optional Oura connection in the
+History page. Oura access requires your authorization, and measurements are
+available only when Oura returns data for the selected recording.
 
 ## Information stored on your device
 
@@ -30,8 +29,8 @@ does not automatically upload its history or diagnostic logs to the maintainer.
 
 ## Optional Oura connection
 
-The planned connection uses the official Oura API V2, after you explicitly
-authorize Breeze through Oura's OAuth sign-in and consent flow. Breeze will not
+The connection uses the official Oura API V2, after you explicitly
+authorize Breeze through Oura's OAuth sign-in and consent flow. Breeze does not
 ask for or store your Oura password or connect directly to your ring.
 
 Its purpose is to display these four measurements alongside existing overnight
@@ -42,22 +41,22 @@ recordings:
 3. Sleep-period average respiratory rate.
 4. Sleep stages.
 
-The connection will request the `daily` permission needed for sleep and
+The connection requests the `daily` permission needed for sleep and
 readiness records. Oura's permission covers more fields than Breeze needs;
-Breeze's import will retain only the four measurements above and the metadata
+Breeze's import retains only the four measurements above and the metadata
 needed to identify, align, and update them, such as source record IDs, timestamps,
 time-zone offsets, sample intervals, units, and import status. Unneeded response
-fields will not be retained as additional features.
+fields are not retained as additional features.
 
-Oura authorization tokens will be protected on the device using Android
-Keystore-backed encryption. Imported history will be stored separately from
-sensor rows in private app storage and remain available offline. It will be
+Oura authorization tokens are protected on the device using Android
+Keystore-backed encryption. Imported history is stored separately from
+sensor rows in private app storage and remains available offline. It is
 used only for historical display, not predictions, correlations,
 recommendations, advertising, AI model training, or fan-control decisions.
-Breeze will not upload sensor history to Oura or send imported Oura readings to
+Breeze does not upload sensor history to Oura or send imported Oura readings to
 Dreo, weather services, or a maintainer-operated server.
 
-Requests will go directly from the device to Oura. Oura will receive the
+Requests go directly from the device to Oura. Oura receives the
 authorization and API requests, including the requested date ranges and normal
 network information such as your IP address. Oura's processing of your account
 and original ring data remains governed by Oura's own privacy policy.
@@ -115,7 +114,7 @@ not separately encrypted by Breeze; Android's app isolation and device security
 protect private storage. Account credentials use the additional encryption
 described above.
 
-You can stop optional connections or revoke Android permissions. For the planned
+You can stop optional connections or revoke Android permissions. For the
 Oura connection, withdrawing Breeze's authorization through Oura stops future
 authorized access; it does not by itself erase a previously imported local copy.
 
@@ -145,8 +144,8 @@ entry and keeps it temporarily in page memory. The return link expires after
 5 minutes or sooner if the token expires; using the button or leaving the page
 discards the pending response. Query-string token and authorization-code
 responses are rejected; query strings, unlike fragments, are part of the
-ordinary web request received by the host. The Android integration must still
-validate the sign-in request before accepting any response.
+ordinary web request received by the host. The Android integration also
+validates the sign-in request before accepting any response.
 
 Changes to this policy will be published at this same address with an updated
 effective date. The repository's file history records prior versions.

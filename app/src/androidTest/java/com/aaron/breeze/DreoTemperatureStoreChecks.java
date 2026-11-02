@@ -31,7 +31,7 @@ public final class DreoTemperatureStoreChecks {
             legacy.setVersion(6);legacy.close();
 
             store=new Store(context,name);reader=new Store(context,name);
-            check(store.getReadableDatabase().getVersion()==7,"Schema6 upgrades to7");
+            check(store.getReadableDatabase().getVersion()==8,"Schema6 upgrades to8");
             check(store.sessions().size()==1&&store.sessions().get(0).count==1,"Migration preserves session and sample count");
             Store.Point sensor=store.points(1).get(0);
             check(sensor.probe==36&&sensor.secondProbe==35&&sensor.thirdProbe==34&&sensor.fanSetting==4,"Migration preserves all three probes and fan setting");
@@ -65,7 +65,7 @@ public final class DreoTemperatureStoreChecks {
             revision=reader.revision();store.updateFeeling(1,1,START+600_000,Store.FEELING_COLD,6);check(reader.revision()>revision,"Feeling edits invalidate history cache");
             store.close();store=new Store(context,name);
             check(store.dreoTemperatures(1).size()==5&&store.points(1).size()==1,"Cloud and controller records persist independently across helper restart");
-            return "PASS: additive schema6-to7 migration preserves sensors, fan settings, weather, feelings and cursor; timestamped Dreo data, duplicate protection, unavailable/restart/device gaps, night bounds and cross-helper history revisions\n";
+            return "PASS: additive schema6-to8 migration preserves sensors, fan settings, weather, feelings and cursor; timestamped Dreo data, duplicate protection, unavailable/restart/device gaps, night bounds and cross-helper history revisions\n";
         }finally{
             if(legacy.isOpen())legacy.close();if(store!=null)store.close();if(reader!=null)reader.close();context.deleteDatabase(name);
         }

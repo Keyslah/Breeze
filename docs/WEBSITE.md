@@ -36,8 +36,11 @@ Register this exact redirect URI:
 This is a callback location, not proof that a particular registered Oura client
 supports the client-only OAuth flow. The registered client must be verified
 before use. There is no confidential client secret or code-exchange backend.
-The Android app now has the Oura receiver and sign-in flow. Real consent and
-data import still need verification for the registered client.
+The Android app has the Oura receiver, sign-in flow, and four-measurement History
+integration. Real consent and access to the sleep/readiness API were verified
+on November 1, 2026. The account had no recent records; the user authorized
+completion against the official schema and synthetic fixtures, with real-night
+alignment verification deferred until a new night is recorded.
 
 The page accepts Oura's documented client-only token response in the fragment,
 or a denial/error with a state. It rejects query tokens, authorization codes,

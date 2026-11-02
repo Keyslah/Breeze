@@ -17,7 +17,7 @@ public class Store extends SQLiteOpenHelper {
     private final Context context;
     private final AtomicLong dataRevision;
     public Store(Context c) { this(c,"breeze.db"); }
-    public Store(Context c,String name) { super(c,name,null,7);context=c.getApplicationContext()==null?c:c.getApplicationContext();dataRevision=REVISIONS.computeIfAbsent(c.getDatabasePath(name).getAbsolutePath(),key->new AtomicLong()); }
+    public Store(Context c,String name) { super(c,name,null,8);context=c.getApplicationContext()==null?c:c.getApplicationContext();dataRevision=REVISIONS.computeIfAbsent(c.getDatabasePath(name).getAbsolutePath(),key->new AtomicLong()); }
     /** Shared by every helper for this database; reading a revision performs no disk work. */
     public long revision(){return dataRevision.get();}
     private void dataChanged(){dataRevision.incrementAndGet();}
@@ -36,6 +36,7 @@ public class Store extends SQLiteOpenHelper {
         addFanSettingColumns(d);
         createFeelings(d);
         createDreoTemperatures(d);
+        createOura(d);
     }
     private static void createDreoTemperatures(SQLiteDatabase d){
         d.execSQL("CREATE TABLE dreo_temperatures (id INTEGER PRIMARY KEY, device TEXT NOT NULL, received_at INTEGER NOT NULL, reported_at INTEGER NOT NULL, raw_temperature REAL, source_unit TEXT, temp_c REAL, segment TEXT NOT NULL, UNIQUE(device,received_at))");
@@ -56,7 +57,7 @@ public class Store extends SQLiteOpenHelper {
         d.execSQL("CREATE INDEX feeling_time ON feelings(session,time,id)");
     }
     @Override public void onUpgrade(SQLiteDatabase d,int old,int next) {
-        if(old<1||next>7||old>=next)throw new IllegalStateException("Migration required");
+        if(old<1||next>8||old>=next)throw new IllegalStateException("Migration required");
         if(old<2&&next>=2){d.execSQL("ALTER TABLE samples ADD COLUMN second_probe REAL");d.execSQL("ALTER TABLE samples ADD COLUMN phase INTEGER NOT NULL DEFAULT 0");}
         if(old<3&&next>=3)createLegacyFeelings(d);
         if(old<4&&next>=4){
@@ -79,6 +80,39 @@ public class Store extends SQLiteOpenHelper {
         if(old<5&&next>=5){d.execSQL("ALTER TABLE samples ADD COLUMN third_probe REAL");d.execSQL("ALTER TABLE samples ADD COLUMN third_probe_record INTEGER");d.execSQL("CREATE INDEX sample_third_probe_record ON samples(device,third_probe_record)");}
         if(old<6&&next>=6)addFanSettingColumns(d);
         if(old<7&&next>=7)createDreoTemperatures(d);
+        if(old<8&&next>=8)createOura(d);
+    }
+    private static void createOura(SQLiteDatabase d){
+        d.execSQL("CREATE TABLE oura_sleep (source_id TEXT PRIMARY KEY, day TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, raw_json TEXT NOT NULL, imported_at INTEGER NOT NULL, active INTEGER NOT NULL)");
+        d.execSQL("CREATE INDEX oura_sleep_overlap ON oura_sleep(active,start,end)");
+        d.execSQL("CREATE TABLE oura_imports (session INTEGER PRIMARY KEY, range_start INTEGER NOT NULL, range_end INTEGER NOT NULL, imported_at INTEGER NOT NULL)");
+    }
+    void saveOura(long session,long start,long end,String fromDay,String toDay,List<OuraData.Period> periods,long importedAt){
+        SQLiteDatabase d=getWritableDatabase();d.beginTransaction();
+        try{
+            // Revisions/deletions are retained as inactive source records, not duplicated or erased.
+            ContentValues inactive=new ContentValues();inactive.put("active",0);
+            d.update("oura_sleep",inactive,"day>=? AND day<?",new String[]{fromDay,toDay});
+            for(OuraData.Period p:periods){
+                if(p.id.isEmpty())continue;
+                if(p.start<=0||p.end<=p.start){d.update("oura_sleep",inactive,"source_id=?",new String[]{p.id});continue;}
+                ContentValues v=new ContentValues();v.put("source_id",p.id);v.put("day",p.day);v.put("start",p.start);v.put("end",p.end);
+                v.put("raw_json",p.raw);v.put("imported_at",importedAt);v.put("active",p.completed(importedAt)?1:0);
+                if(d.update("oura_sleep",v,"source_id=?",new String[]{p.id})==0)d.insertOrThrow("oura_sleep",null,v);
+            }
+            ContentValues cache=new ContentValues();cache.put("session",session);cache.put("range_start",start);cache.put("range_end",end);cache.put("imported_at",importedAt);
+            if(d.update("oura_imports",cache,"session=?",new String[]{""+session})==0)d.insertOrThrow("oura_imports",null,cache);
+            d.setTransactionSuccessful();
+        }finally{d.endTransaction();}dataChanged();
+    }
+    OuraData.Cache oura(Session session){
+        if(session==null)return OuraData.Cache.empty();long imported=0;boolean fetched=false;
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT imported_at FROM oura_imports WHERE session=?",new String[]{""+session.id})){if(c.moveToFirst()){fetched=true;imported=c.getLong(0);}}
+        long end=session.end>session.start?session.end:System.currentTimeMillis();List<OuraData.Period> periods=new ArrayList<>();
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT raw_json FROM oura_sleep WHERE active=1 AND start<? AND end>? ORDER BY start,source_id",new String[]{""+end,""+session.start})){
+            while(c.moveToNext())try{periods.add(new OuraData.Period(new org.json.JSONObject(c.getString(0))));}catch(org.json.JSONException invalid){/* Keep other valid cached periods. */}
+        }
+        return new OuraData.Cache(fetched,imported,periods);
     }
     public long start(String config) { ContentValues v=new ContentValues(); v.put("start",System.currentTimeMillis()); v.put("name","Sleep session"); v.put("config",config);long id=getWritableDatabase().insertOrThrow("sessions",null,v);dataChanged();return id; }
     public void finish(long id) { ContentValues v=new ContentValues();v.put("end",System.currentTimeMillis());if(getWritableDatabase().update("sessions",v,"id=?",new String[]{""+id})>0)dataChanged(); }

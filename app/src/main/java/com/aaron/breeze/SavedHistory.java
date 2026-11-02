@@ -12,6 +12,7 @@ final class SavedHistory {
     final List<Store.Point> points, weather, dreo;
     final String weatherLocation;
     final boolean includesGraph;
+    final OuraData.Cache oura;
 
     SavedHistory(Store store, long selected, boolean followLatest, boolean includeGraph) {
         revision = store.revision();
@@ -30,6 +31,7 @@ final class SavedHistory {
         weather = includeGraph && chosen != null ? store.weather(chosen.id) : List.of();
         dreo = includeGraph && chosen != null ? store.dreoTemperatures(chosen.id) : List.of();
         weatherLocation = includeGraph && chosen != null ? store.weatherLocation(chosen.id) : "";
+        oura = includeGraph && chosen != null ? store.oura(chosen) : OuraData.Cache.empty();
     }
 
     long selected() { return session == null ? -1 : session.id; }

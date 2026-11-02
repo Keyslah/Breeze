@@ -19,7 +19,7 @@ import java.util.Map;
 import java.util.Set;
 import javax.net.ssl.HttpsURLConnection;
 
-/** First real-data verification, retaining only the requested measurements in private app files. */
+/** On-demand V2 import. Tokens stay on the phone; only the four measurements enter the cache. */
 final class OuraProbe {
     private static final ZoneId CENTRAL=ZoneId.of("America/Chicago");
     private final Context context;
@@ -27,9 +27,17 @@ final class OuraProbe {
     OuraProbe(Context context){this.context=context.getApplicationContext();account=new OuraAccountStore(context);}
 
     JSONObject run() throws Exception {
-        long now=System.currentTimeMillis();long[] target=account.target();
-        long start=target[0]>0?target[0]:now-7*24*3600000L;
-        long end=target[1]>start?target[1]:now;
+        long[] target=account.target();
+        try(Store store=new Store(context)){
+            java.util.List<Store.Session> sessions=store.sessions();Store.Session chosen=sessions.isEmpty()?null:sessions.get(0);
+            for(Store.Session candidate:sessions)if(candidate.start==target[0]){chosen=candidate;break;}
+            return run(store,chosen);
+        }
+    }
+
+    JSONObject run(Store store,Store.Session selected) throws Exception {
+        if(selected==null)throw new IOException("Choose a Breeze recorded night to refresh Oura.");
+        long now=System.currentTimeMillis(),start=selected.start,end=selected.end>start?selected.end:now;
         String token=account.token();
         if(now<OuraConnection.prefs(context).getLong("retryAfter",0))throw new IOException("Oura requested a pause. Try Refresh Oura later.");
         LocalDate from=Instant.ofEpochMilli(start).atZone(CENTRAL).toLocalDate().minusDays(1);
@@ -37,10 +45,7 @@ final class OuraProbe {
         JSONArray records=collection("sleep",from,to,"id,day,bedtime_start,bedtime_end,type,heart_rate,sleep_phase_5_min,sleep_phase_30_sec,average_breath,readiness",token);
         JSONArray filtered=new JSONArray();Map<String,JSONObject> latest=new HashMap<>();
         for(int i=0;i<records.length();i++){
-            JSONObject record=records.getJSONObject(i);String type=record.optString("type","");
-            if("deleted".equals(type)||"rest".equals(type))continue;
-            long periodStart=timestamp(record.optString("bedtime_start","")),periodEnd=timestamp(record.optString("bedtime_end",""));
-            if(periodStart<=0||periodEnd<=periodStart||periodEnd>now||periodStart>=end||periodEnd<=start)continue;
+            JSONObject record=records.getJSONObject(i);
             String id=record.optString("id","");if(id.isEmpty())continue;
             latest.put(id,record);
         }
@@ -58,9 +63,7 @@ final class OuraProbe {
         java.util.List<JSONObject> ordered=new java.util.ArrayList<>(latest.values());
         ordered.sort(java.util.Comparator.comparingLong(r->timestamp(r.optString("bedtime_start",""))));
         for(JSONObject record:ordered){
-            JSONObject kept=new JSONObject();
-            for(String key:new String[]{"id","day","bedtime_start","bedtime_end","type","heart_rate","average_breath","sleep_phase_5_min","sleep_phase_30_sec"})
-                if(record.has(key))kept.put(key,record.get(key));
+            JSONObject kept=OuraData.retain(record,readiness.get(record.optString("day","")));
             JSONObject temperature=record.optJSONObject("readiness");String temperatureSource="sleep.readiness";
             if(!finite(temperature,"temperature_deviation")){temperature=readiness.get(record.optString("day",""));temperatureSource="daily_readiness";}
             boolean hasTemperature=finite(temperature,"temperature_deviation");
@@ -69,6 +72,8 @@ final class OuraProbe {
                 if(temperatureSource.equals("daily_readiness"))kept.put("temperature_record_id",temperature.optString("id","")).put("temperature_timestamp",temperature.optString("timestamp",""));
             }
             filtered.put(kept);
+            OuraData.Period period=new OuraData.Period(kept);
+            if(!period.completed(now)||!OuraData.overlaps(period.start,period.end,start,end))continue;
             JSONObject heart=record.optJSONObject("heart_rate");JSONArray samples=heart==null?null:heart.optJSONArray("items");int available=0,missing=0;
             if(samples!=null)for(int i=0;i<samples.length();i++){Object value=samples.opt(i);if(value instanceof Number&&Double.isFinite(((Number)value).doubleValue()))available++;else missing++;}
             String stages30=record.optString("sleep_phase_30_sec",""),stages5=record.optString("sleep_phase_5_min","");
@@ -80,11 +85,14 @@ final class OuraProbe {
                     .put("stages_30_second_count",stages30.length()).put("stages_5_minute_count",stages5.length());
             metadata.put(summary);
         }
-        JSONObject stored=new JSONObject().put("imported_at",now).put("range_start",start).put("range_end",end).put("periods",filtered);
-        OuraConnection.write(context,"oura-verification-periods.json",stored);
-        String message=filtered.length()==0?"Oura connected. No completed sleep period is available for the selected recording yet. Sync the Oura app, then Refresh Oura."
-                :"Oura connected. Imported "+filtered.length()+" completed sleep period"+(filtered.length()==1?"":"s")+" for verification. History display is being prepared.";
-        return new JSONObject().put("authorization_verified",true).put("imported_at",now).put("completed_periods",filtered.length()).put("periods",metadata).put("readiness_request_unavailable",readinessUnavailable).put("message",message);
+        java.util.List<OuraData.Period> periods=new java.util.ArrayList<>();
+        for(int i=0;i<filtered.length();i++)periods.add(new OuraData.Period(filtered.getJSONObject(i)));
+        store.saveOura(selected.id,start,end,from.toString(),to.toString(),periods,now);
+        int count=store.oura(selected).periods.size();
+        String message=count==0?"Oura connected. No completed sleep period is available for this recorded night. Refresh Oura after new data syncs."
+                :"Oura connected. "+count+" completed sleep period"+(count==1?"":"s")+" available offline.";
+        if(readinessUnavailable)message+=" Temperature data could not be refreshed; other available measurements were imported.";
+        return new JSONObject().put("authorization_verified",true).put("imported_at",now).put("completed_periods",count).put("periods",metadata).put("readiness_request_unavailable",readinessUnavailable).put("message",message);
     }
 
     private static boolean finite(JSONObject object,String key){Object value=object==null?null:object.opt(key);return value instanceof Number&&Double.isFinite(((Number)value).doubleValue());}
