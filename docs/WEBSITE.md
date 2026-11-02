@@ -36,7 +36,8 @@ Register this exact redirect URI:
 This is a callback location, not proof that a particular registered Oura client
 supports the client-only OAuth flow. The registered client must be verified
 before use. There is no confidential client secret or code-exchange backend.
-The installed Android app does not yet have the Oura receiver or sign-in flow.
+The Android app now has the Oura receiver and sign-in flow. Real consent and
+data import still need verification for the registered client.
 
 The page accepts Oura's documented client-only token response in the fragment,
 or a denial/error with a state. It rejects query tokens, authorization codes,
@@ -58,6 +59,9 @@ Android decodes the string extra. It contains `version: 1`, `state`, and either
 `error` or `access_token`, `token_type`, `expires_in` (seconds), and `scope`.
 Only these fields are forwarded. The page never displays tokens or accepts a
 caller-supplied destination, package, component, or fallback URL.
+Failed response checks display a fixed reason (such as `scope_missing`), never
+the rejected value. The script URL includes its content hash to avoid reusing
+a stale script after an updated page is deployed.
 
 The Android implementation must generate an unpredictable one-use state of
 32–128 URL-safe characters, verify it against its own unexpired pending request,

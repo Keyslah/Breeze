@@ -74,11 +74,11 @@ def render_callback() -> None:
       <p id="callback-status" role="status" aria-live="polite">Preparing the return to Breeze…</p>
       <button id="return-to-breeze" class="button" type="button" hidden>Return to Breeze ↗</button>
       <noscript><p>JavaScript is required to return the sign-in response to Breeze. Close this tab, enable JavaScript, and start again from Breeze. Do not copy or share the address bar.</p></noscript>
-      <p class="muted">This page does not complete sign-in on its own. It needs the Oura-enabled Breeze update on your Android phone.</p>
+      <p class="muted">Start each connection from History → Connect Oura in Breeze. If a check fails, share only the error message, never the address bar or a token.</p>
     </main>
     <footer><span>Breeze · Oura sign-in return</span><div><a href="privacy.html">Privacy policy</a><a href="terms.html">Terms of service</a></div></footer>
   </div>
-  <script src="oura-callback.js" integrity="sha256-{digest}" crossorigin="anonymous"></script>
+  <script src="oura-callback.js?v={hashlib.sha256((WEBSITE / 'oura-callback.js').read_bytes()).hexdigest()[:16]}" integrity="sha256-{digest}" crossorigin="anonymous"></script>
 </body>
 </html>
 '''

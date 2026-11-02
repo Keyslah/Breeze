@@ -36,7 +36,7 @@ function fakeBrowser(search = "", hash = fragment()) {
 test("ordinary direct visits contain no response and cannot launch the app", () => {
   const f = fakeBrowser("", ""); start(f.browser);
   assert.equal(f.button.hidden, true); assert.equal(f.button.onclick, null);
-  assert.match(f.status.textContent, /Once the Oura-enabled/);
+  assert.match(f.status.textContent, /Start Connect Oura from History/);
   assert.equal(f.browser.location.href, "");
 });
 
@@ -68,6 +68,28 @@ test("missing daily consent, invalid state, malformed credentials and expiry are
     { expires_in: "9007199254740992" }, { scope: "daily\nemail" }
   ]) assert.equal(parseResponse("", fragment(override)).kind, "invalid", Object.keys(override).join());
   assert.equal(parseResponse("", "#" + "x".repeat(65537)).kind, "invalid");
+});
+
+test("failed checks identify only fixed reasons and never echo response values", () => {
+  for (const [override, reason] of [
+    [{ state: "" }, "state_missing"], [{ state: "short" }, "state_format"],
+    [{ access_token: "" }, "token_missing"], [{ access_token: "private;bad" }, "token_format"],
+    [{ token_type: "private_type" }, "token_type"], [{ expires_in: "" }, "expiry_missing"],
+    [{ expires_in: "private_expiry" }, "expiry_format"], [{ scope: "" }, "scope_missing"],
+    [{ scope: "private\nscope" }, "scope_format"], [{ scope: "private_scope" }, "daily_missing"]
+  ]) {
+    assert.deepEqual(parseResponse("", fragment(override)), { kind: "invalid", reason });
+    const f = fakeBrowser("", fragment(override)); start(f.browser);
+    assert.ok(f.status.textContent.includes("Check: " + reason));
+    assert.equal(f.status.textContent.includes("private"), false);
+    assert.equal(f.status.textContent.includes(syntheticToken), false);
+    assert.equal(f.status.textContent.includes(state), false);
+    assert.equal(f.browser.location.hash, ""); assert.equal(f.button.hidden, true);
+    assert.equal(f.button.onclick, null); assert.equal(f.browser.location.href, "");
+  }
+  assert.equal(parseResponse("?state=" + state, fragment()).reason, "mixed_locations");
+  assert.equal(parseResponse("", fragment() + "&state=" + state).reason, "duplicate_parameter");
+  assert.equal(parseResponse("", "#" + "x".repeat(65537)).reason, "response_too_large");
 });
 
 test("denial uses fixed error fields and never reflects descriptions", () => {
