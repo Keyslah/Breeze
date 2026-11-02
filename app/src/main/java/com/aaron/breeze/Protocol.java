@@ -2,6 +2,11 @@ package com.aaron.breeze;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.zone.ZoneOffsetTransition;
+import java.time.zone.ZoneRules;
 import java.util.UUID;
 
 public final class Protocol {
@@ -9,6 +14,14 @@ public final class Protocol {
     public static final int START_RECORDING=7, STOP_RECORDING=8;
     public static boolean sensorFirmware(byte[] data){return data.length==20&&data[0]==4&&(data[4]&255)>=6;}
     public static boolean thirdProbeFirmware(byte[] data){return sensorFirmware(data)&&(data[4]&255)>=7&&(data[8]&16)!=0;}
+    public static boolean doubleHitFirmware(byte[] data){return data!=null&&sensorFirmware(data)&&(data[4]&255)>=7&&data[12]==1;}
+    public static boolean logicWindowFirmware(byte[] data){return data!=null&&sensorFirmware(data)&&(data[4]&255)>=7&&(data[15]&255)>=1;}
+    public static boolean logicMultiWindowFirmware(byte[] data){return logicWindowFirmware(data)&&(data[15]&255)>=2;}
+    public static final int DOUBLE_HIT=17,MAX_DOUBLE_HIT_SECONDS=3600;
+    public static byte[] doubleHitTimeout(int seconds,int seq){
+        if(seconds<0||seconds>MAX_DOUBLE_HIT_SECONDS)throw new IllegalArgumentException("Double-hit timeout must be 0–3600 seconds");
+        return packet(6,seq).put((byte)DOUBLE_HIT).put((byte)0).putShort((short)seconds).array();
+    }
     public static final long DEFAULT_TELEMETRY_INTERVAL_MS=1000;
     public static long telemetryIntervalMs(byte[] data){
         if(data==null||!sensorFirmware(data)||(data[4]&255)<7||(data[8]&64)==0)return DEFAULT_TELEMETRY_INTERVAL_MS;
@@ -18,6 +31,7 @@ public final class Protocol {
     public static long telemetryFreshnessMs(long intervalMs){return intervalMs<=DEFAULT_TELEMETRY_INTERVAL_MS?6000:Math.max(6000,intervalMs*2+5000);}
     public static long telemetryLinkTimeoutMs(long intervalMs){return Math.max(15000,intervalMs*3);}
     public static final int LEARN=1,CANCEL_LEARN=2,CLEAR_LEARNED=3,SEND_IR=4,TARGET_SPEED=5,SYNC_SPEED=6,AUTO=7,VERIFIED=8,FORGET_FAN=9,CONTACT_TEST=10,MARK_TEST=11,IR_RECEIVER_TEST=12,LOGIC_GLOBAL=13,LOGIC_RULE=14,LOGIC_BOOST=15,LOGIC_COMMIT=16;
+    public static final int LOGIC_WINDOW=18,LOGIC_CLOCK=19;
     public static final String[] COMMANDS={"Power","Speed +","Speed -","Mode","Horizontal oscillation","Vertical oscillation","Extra 1","Extra 2","Extra 3","Extra 4","Extra 5","Extra 6"};
     public static class FanState {
         public int flags,speed,target,learning,learnState,learned,error,source,resultSlot,lastSent,sendCounter,phase;
@@ -25,6 +39,8 @@ public final class Protocol {
         public long time;
         public boolean synced(){return (flags&4)!=0;}
         public boolean busy(){return (flags&32)!=0;}
+        /** The controller accepted a press and is holding it until the fan's display is certainly off. */
+        public boolean held(){return (flags&64)!=0;}
         public boolean has(int slot){return slot>=0&&slot<COMMANDS.length&&(learned&(1<<slot))!=0;}
     }
     public static FanState decodeFan(byte[] data,long time){
@@ -111,13 +127,44 @@ public final class Protocol {
         if ((Double.isFinite(r.probe)&&(r.probe < -20 || r.probe > 80)) || (Double.isFinite(r.thirdProbe)&&(r.thirdProbe < -20 || r.thirdProbe > 80)) || (Double.isFinite(r.humidity)&&r.humidity > 100)) throw new IllegalArgumentException("Invalid sensor packet");
         return r;
     }
-    public static byte[] logicGlobal(LogicProfile p,int seq){p.validate();return packet(6,seq).put((byte)LOGIC_GLOBAL).put((byte)p.probeMask).putShort((short)Math.round(p.roomBoundaryF*100)).putShort((short)p.averageSeconds).putShort((short)p.riseSeconds).putShort((short)p.fallSeconds).put((byte)p.maxSpeed).put((byte)2).putShort((short)Math.round(p.coolRoomThresholdF*100)).array();}
-    public static byte[] logicRule(LogicProfile p,int index,int seq){p.validate();if(index<0||index>1)throw new IllegalArgumentException("Unknown room rule.");LogicProfile.Rule r=index==0?p.warm:p.cool;return packet(6,seq).put((byte)LOGIC_RULE).put((byte)index).putShort((short)Math.round(r.bodyThresholdF*100)).putShort((short)Math.round(r.stepF*100)).put((byte)r.minimumSpeed).put((byte)(r.offBelow?1:0)).put((byte)1).array();}
-    public static byte[] logicBoost(LogicProfile p,int index,int seq){p.validate();if(index<0||index>1)throw new IllegalArgumentException("Unknown room rule.");LogicProfile.Boost b=(index==0?p.warm:p.cool).boost;return packet(6,seq).put((byte)LOGIC_BOOST).put((byte)index).put((byte)(b.enabled?1:0)).put((byte)b.amount).putShort((short)Math.round(b.triggerRiseF*100)).putShort((short)b.windowSeconds).putShort((short)b.riseSeconds).putShort((short)b.holdSeconds).putShort((short)b.returnSeconds).put((byte)b.curve).put((byte)1).array();}
+    // Range uploads carry 3 as their layout marker; a controller still on the threshold rules refuses them.
+    private static final int RANGE_LAYOUT=3;
+    private static short centi(double value){return (short)Math.round(value*100);}
+    public static byte[] logicGlobal(LogicProfile p,int seq){p.validate();return packet(6,seq).put((byte)LOGIC_GLOBAL).put((byte)0).putShort((short)p.averageSeconds).putShort((short)p.riseSeconds).putShort((short)p.fallSeconds).putShort(centi(p.steadiness)).put((byte)0).put((byte)RANGE_LAYOUT).array();}
+    public static byte[] logicRange(LogicProfile p,int seq){p.validate();return packet(6,seq).put((byte)LOGIC_RULE).put((byte)0).putShort(centi(p.offRoomF)).putShort(centi(p.offBodyF)).putShort(centi(p.fullRoomF)).putShort(centi(p.fullBodyF)).putShort(centi(p.bodyWeight)).put((byte)RANGE_LAYOUT).array();}
+    public static byte[] logicBoost(LogicProfile p,int seq){p.validate();LogicProfile.Boost b=p.boost;return packet(6,seq).put((byte)LOGIC_BOOST).put((byte)0).put((byte)(b.enabled?1:0)).put((byte)b.amount).putShort(centi(b.triggerRiseF)).putShort((short)b.windowSeconds).putShort((short)b.riseSeconds).putShort((short)b.holdSeconds).putShort((short)b.returnSeconds).put((byte)b.curve).put((byte)RANGE_LAYOUT).array();}
+    public static byte[] logicWindow(LogicProfile p,int seq){
+        p.validate();LogicProfile.TimeWindow w=p.timeWindow;
+        if(p.timeWindows.size()>1&&p.hasEnabledTimeWindows())throw new IllegalArgumentException("Multiple time windows require updated controller firmware.");
+        return packet(6,seq).put((byte)LOGIC_WINDOW).put((byte)(w.enabled?1:0)).putShort((short)w.startMinute).putShort((short)w.endMinute).put((byte)w.adjustment).put((byte)1).array();
+    }
+    public static byte[] logicWindow(LogicProfile p,int index,int seq){
+        p.validate();if(index<0||index>=p.timeWindows.size())throw new IllegalArgumentException("Invalid time window index.");
+        if(p.timeWindows.size()>LogicProfile.MAX_COMPILED_TIME_WINDOWS)throw new IllegalArgumentException("Compile saved time windows before sending them to the controller.");
+        LogicProfile.TimeWindow w=p.timeWindows.get(index);
+        return packet(6,seq).put((byte)LOGIC_WINDOW).put((byte)(w.enabled?1:0)).putShort((short)w.startMinute).putShort((short)w.endMinute).put((byte)w.adjustment).put((byte)2).putShort((short)index).putShort((short)p.timeWindows.size()).array();
+    }
+    private static short offsetMinutes(ZoneOffset offset){
+        int seconds=offset.getTotalSeconds();
+        if(seconds%60!=0)throw new IllegalArgumentException("Controller time zone must use whole-minute offsets.");
+        return (short)(seconds/60);
+    }
+    /** Gives the controller UTC and local offsets, including the next daylight-saving transition. */
+    public static byte[] logicClock(long epochSeconds,ZoneId zone,int seq){
+        if(epochSeconds<=0||epochSeconds>0xffffffffL)throw new IllegalArgumentException("Controller clock is outside the supported range.");
+        if(zone==null)throw new IllegalArgumentException("Controller time zone is missing.");
+        Instant now=Instant.ofEpochSecond(epochSeconds);ZoneRules rules=zone.getRules();short currentOffset=offsetMinutes(rules.getOffset(now));
+        ZoneOffsetTransition next=rules.nextTransition(now);long transitionSeconds=0;short nextOffset=currentOffset;
+        if(next!=null&&next.toEpochSecond()<=0xffffffffL){transitionSeconds=next.toEpochSecond();nextOffset=offsetMinutes(next.getOffsetAfter());}
+        return packet(6,seq).put((byte)LOGIC_CLOCK).put((byte)1).putInt((int)epochSeconds).putShort(currentOffset).putInt((int)transitionSeconds).putShort(nextOffset).array();
+    }
+    public static byte[] logicClock(int seq){return logicClock(System.currentTimeMillis()/1000,ZoneId.systemDefault(),seq);}
     public static byte[] logicCommit(int seq){return packet(6,seq).put((byte)LOGIC_COMMIT).array();}
     public static final class LogicState {
-        public int flags,rule,target,boostSeconds,revision,error,probeMask;
+        public int flags,rule,target,boostSeconds,revision,error,probeMask,windowAdjustment;
         public double averageBodyF,roomF,thirdProbe;
+        /** Position in the range: 0 is the Off point and 10 the Full point; NaN when the controller is not scoring. */
+        public double score=Double.NaN;
         public long time;
         public boolean automatic(){return (flags&1)!=0;}
         public boolean boosting(){return (flags&2)!=0;}
@@ -125,7 +172,7 @@ public final class Protocol {
         public boolean noBody(){return (flags&16)!=0;}
     }
     public static LogicState decodeLogic(byte[] data,long time){
-        if(data.length!=20||data[0]!=9||data[19]!=1)throw new IllegalArgumentException("Unsupported logic packet.");ByteBuffer p=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);LogicState l=new LogicState();l.time=time;l.flags=data[1]&255;l.rule=data[2]&255;l.target=data[3]&255;l.averageBodyF=l.noBody()?Double.NaN:p.getShort(4)/100.0;l.roomF=p.getShort(6)/100.0;l.boostSeconds=p.getShort(8)&65535;l.revision=p.getShort(10)&65535;l.error=data[12]&255;l.probeMask=data[13]&255;l.thirdProbe=(l.flags&32)!=0?p.getShort(14)/100.0:Double.NaN;if((l.rule>1&&l.rule!=255)||l.target>FanSetting.MAX||l.boostSeconds>3600||l.probeMask<1||l.probeMask>7)throw new IllegalArgumentException("Invalid logic state.");return l;
+        if(data.length!=20||data[0]!=9||data[19]!=1)throw new IllegalArgumentException("Unsupported logic packet.");ByteBuffer p=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);LogicState l=new LogicState();l.time=time;l.flags=data[1]&255;l.rule=data[2]&255;l.target=data[3]&255;l.averageBodyF=l.noBody()?Double.NaN:p.getShort(4)/100.0;l.roomF=p.getShort(6)/100.0;l.boostSeconds=p.getShort(8)&65535;l.revision=p.getShort(10)&65535;l.error=data[12]&255;l.probeMask=data[13]&255;l.thirdProbe=(l.flags&32)!=0?p.getShort(14)/100.0:Double.NaN;l.score=(l.flags&64)!=0?p.getShort(16)/100.0:Double.NaN;l.windowAdjustment=data[18];if((l.rule>1&&l.rule!=255)||l.target>FanSetting.MAX||l.boostSeconds>3600||l.probeMask<1||l.probeMask>7||l.windowAdjustment< -FanSetting.MAX||l.windowAdjustment>FanSetting.MAX)throw new IllegalArgumentException("Invalid logic state.");return l;
     }
     private static ByteBuffer packet(int op,int seq) { return ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN).put((byte)1).put((byte)op).putShort((short)seq); }
     public static byte[] control(int action,int value,int seq) { return packet(2,seq).put((byte)action).put((byte)value).array(); }
@@ -152,6 +199,6 @@ public final class Protocol {
                 throw new IllegalArgumentException("Damaged fan setting record");
         }
     }
-    public static String error(int code) { return switch(code) { case 0 -> ""; case 1 -> "Unsupported command"; case 3 -> "All body probes unavailable"; case 4 -> "Stop recording first"; case 6 -> "Controller storage unavailable or full: recording stopped"; case 7 -> "Set the controller clock before starting"; case 20 -> "Command not learned"; case 21 -> "Correct the current fan setting on Home (0 = Off)"; case 22 -> "Controller busy; wait for recording or IR work to finish"; case 23 -> "Learning timed out; try again"; case 24 -> "Could not save IR data in controller storage"; case 25 -> "IR capture too short or too long; try one button press"; case 26 -> "Invalid fan setting"; case 27 -> "No usable body probe; automatic changes stopped"; case 28 -> "Test the learned commands on the physical fan first"; case 29 -> "Original remote detected; sync current speed again"; case 30 -> "Automatic rules are not defined yet. Collect the probe test data first."; case 31 -> "Room temperature unavailable; holding the last fan setting."; default -> "Controller error " + code; }; }
+    public static String error(int code) { return switch(code) { case 0 -> ""; case 1 -> "Unsupported command"; case 3 -> "All body probes unavailable"; case 4 -> "Stop recording first"; case 6 -> "Controller storage unavailable or full: recording stopped"; case 7 -> "Set the controller clock before starting"; case 20 -> "Command not learned"; case 21 -> "Correct the current fan setting on Home (0 = Off)"; case 22 -> "Controller busy; wait for recording or IR work to finish"; case 23 -> "Learning timed out; try again"; case 24 -> "Could not save IR data in controller storage"; case 25 -> "IR capture too short or too long; try one button press"; case 26 -> "Invalid fan setting"; case 27 -> "No body reading; holding the fan where it is"; case 28 -> "Test the learned commands on the physical fan first"; case 29 -> "Original remote detected; sync current speed again"; case 30 -> "Automatic rules are not defined yet. Collect the probe test data first."; case 31 -> "No room reading; holding the fan where it is"; default -> "Controller error " + code; }; }
 
 }

@@ -9,53 +9,64 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 public final class Settings {
     private Settings(){}
-    private static final String ACTIVE_LOGIC="logicProfileV1",SAVED_LOGIC="logicSavedProfilesV1";
+    // Range profiles have their own keys. The earlier Warm/Cool threshold profiles stay untouched under
+    // logicProfileV1 and logicSavedProfilesV1 so nothing the user saved is overwritten or lost.
+    private static final String ACTIVE_LOGIC="logicProfileV2",DRAFT_LOGIC="logicDraftV2",SAVED_LOGIC="logicSavedProfilesV2",EARLIER_LOGIC="logicProfileV1";
     public static SharedPreferences prefs(Context c){return c.getSharedPreferences("breeze",Context.MODE_PRIVATE);}
+    public static int doubleHitTimeout(Context context){return Math.max(0,Math.min(Protocol.MAX_DOUBLE_HIT_SECONDS,prefs(context).getInt("doubleHitTimeoutSeconds",0)));}
+    public static void saveDoubleHitTimeout(Context context,int seconds){
+        if(seconds<0||seconds>Protocol.MAX_DOUBLE_HIT_SECONDS)throw new IllegalArgumentException("Enter 0–3600 seconds.");
+        if(!prefs(context).edit().putInt("doubleHitTimeoutSeconds",seconds).commit())throw new IllegalStateException("Could not save the double-hit timeout.");
+    }
+    /** The range the controller should be running: the last one applied from Setup. */
     public static synchronized LogicProfile logicProfile(Context context){
         SharedPreferences p=prefs(context);String saved=p.getString(ACTIVE_LOGIC,null);
-        LogicProfile profile=saved==null?new LogicProfile():LogicProfile.deserialize(saved);
-        if(saved==null||!p.contains(SAVED_LOGIC)){
-            SharedPreferences.Editor edit=p.edit();
-            if(saved==null)edit.putString(ACTIVE_LOGIC,profile.serialize());
-            if(!p.contains(SAVED_LOGIC))edit.putString(SAVED_LOGIC,seedLibrary(p,profile).toString());
-            commitLogic(edit);
-        }
+        if(saved!=null)return LogicProfile.deserialize(saved);
+        LogicProfile profile=LogicProfile.fromThresholdProfile(p.getString(EARLIER_LOGIC,null));
+        // The controller still holds whatever it had before; send this range the next time Logic resumes.
+        commitLogic(p.edit().putString(ACTIVE_LOGIC,profile.serialize()).putBoolean("homeLogicProfileDeferred",true));
         return profile;
     }
+    /** Record a range as applied; any unsent Setup edits are replaced by it. */
     public static synchronized void saveLogicProfile(Context context,LogicProfile profile){
-        String saved=profile.serialize();SharedPreferences p=prefs(context);SharedPreferences.Editor edit=p.edit().putString(ACTIVE_LOGIC,saved);
-        // Preserve the pre-upgrade active profile before the first autosave can rename it.
-        if(!p.contains(SAVED_LOGIC))edit.putString(SAVED_LOGIC,seedLibrary(p,profile).toString());
+        commitLogic(prefs(context).edit().putString(ACTIVE_LOGIC,profile.serialize()).remove(DRAFT_LOGIC));
+    }
+    /** What Setup shows: unsent edits when there are any, otherwise the applied range. */
+    public static synchronized LogicProfile logicDraft(Context context){
+        LogicProfile applied=logicProfile(context);String draft=prefs(context).getString(DRAFT_LOGIC,null);
+        if(draft==null)return applied;
+        try{return LogicProfile.deserialize(draft);}catch(IllegalArgumentException unreadable){return applied;}
+    }
+    public static synchronized boolean logicDraftPending(Context context){return prefs(context).contains(DRAFT_LOGIC);}
+    /** Keep Setup edits on the phone without sending them to the controller. */
+    public static synchronized void saveLogicDraft(Context context,LogicProfile profile){
+        LogicProfile applied=logicProfile(context);SharedPreferences.Editor edit=prefs(context).edit();
+        // When only the name differs there is nothing to send: the controller never sees it.
+        if(profile.sameSettings(applied))edit.putString(ACTIVE_LOGIC,profile.serialize()).remove(DRAFT_LOGIC);
+        else edit.putString(DRAFT_LOGIC,profile.serialize());
         commitLogic(edit);
     }
     public static synchronized List<LogicProfile> savedLogicProfiles(Context context){
-        JSONObject library=savedLibrary(context);List<LogicProfile> profiles=new ArrayList<>();
+        JSONObject library=readLibrary(prefs(context));List<LogicProfile> profiles=new ArrayList<>();
         try{Iterator<String> names=library.keys();while(names.hasNext())profiles.add(LogicProfile.deserialize(library.getString(names.next())));}
         catch(JSONException failure){throw invalidLibrary(failure);}
         profiles.sort(Comparator.comparing(profile->profile.name));return profiles;
     }
+    public static synchronized boolean hasSavedLogicProfile(Context context,String name){return readLibrary(prefs(context)).has(name==null?"":name.trim());}
+    /** Keep a named copy. It changes neither the Setup form nor what the controller runs. */
     public static synchronized void saveNamedLogicProfile(Context context,LogicProfile profile){
-        String saved=profile.serialize();SharedPreferences p=prefs(context);
-        JSONObject library=p.contains(SAVED_LOGIC)?readLibrary(p):seedLibrary(p,profile);
+        String saved=profile.serialize();SharedPreferences p=prefs(context);JSONObject library=readLibrary(p);
         try{library.put(profile.name.trim(),saved);}catch(JSONException failure){throw invalidLibrary(failure);}
-        commitLogic(p.edit().putString(ACTIVE_LOGIC,saved).putString(SAVED_LOGIC,library.toString()));
+        commitLogic(p.edit().putString(SAVED_LOGIC,library.toString()));
     }
+    /** Read a named copy without applying it. */
     public static synchronized LogicProfile loadLogicProfile(Context context,String name){
-        String requested=name==null?"":name.trim();JSONObject library=savedLibrary(context);
+        String requested=name==null?"":name.trim();JSONObject library=readLibrary(prefs(context));
         if(!library.has(requested))throw new IllegalArgumentException("Saved profile not found.");
-        try{
-            LogicProfile profile=LogicProfile.deserialize(library.getString(requested));
-            commitLogic(prefs(context).edit().putString(ACTIVE_LOGIC,profile.serialize()));return profile;
-        }catch(JSONException failure){throw invalidLibrary(failure);}
-    }
-    private static JSONObject savedLibrary(Context context){
-        SharedPreferences p=prefs(context);if(!p.contains(SAVED_LOGIC))logicProfile(context);return readLibrary(p);
-    }
-    private static JSONObject seedLibrary(SharedPreferences prefs,LogicProfile fallback){
-        String previous=prefs.getString(ACTIVE_LOGIC,null);LogicProfile seed=previous==null?fallback:LogicProfile.deserialize(previous);
-        JSONObject library=new JSONObject();try{library.put(seed.name.trim(),seed.serialize());return library;}catch(JSONException failure){throw invalidLibrary(failure);}
+        try{return LogicProfile.deserialize(library.getString(requested));}catch(JSONException failure){throw invalidLibrary(failure);}
     }
     private static JSONObject readLibrary(SharedPreferences prefs){
+        if(!prefs.contains(SAVED_LOGIC))return new JSONObject();
         try{
             JSONTokener input=new JSONTokener(prefs.getString(SAVED_LOGIC,""));Object parsed=input.nextValue();
             if(!(parsed instanceof JSONObject)||input.nextClean()!=0)throw new IllegalArgumentException("Invalid saved profile collection.");
@@ -73,6 +84,7 @@ public final class Settings {
     private static void commitLogic(SharedPreferences.Editor edit){
         if(!edit.commit())throw new IllegalStateException("Could not save the logic profile.");
     }
+    static boolean historySmoothHighestBody(SharedPreferences prefs){return prefs.getBoolean("historySmoothHighestBody",false);}
     static int historyVisibleSeries(SharedPreferences prefs){
         int visible=prefs.getInt("historyVisibleSeries",GraphView.DEFAULT_SERIES)&GraphView.ALL_SERIES;
         if(!prefs.getBoolean("historyHighestBodyDefaultApplied",false)){

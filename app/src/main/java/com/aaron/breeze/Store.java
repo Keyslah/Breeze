@@ -8,12 +8,19 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class Store extends SQLiteOpenHelper {
     public static final String FEELINGS_CHANGED="com.aaron.breeze.FEELINGS_CHANGED";
+    private static final ConcurrentHashMap<String,AtomicLong> REVISIONS=new ConcurrentHashMap<>();
     private final Context context;
+    private final AtomicLong dataRevision;
     public Store(Context c) { this(c,"breeze.db"); }
-    public Store(Context c,String name) { super(c,name,null,6);context=c.getApplicationContext()==null?c:c.getApplicationContext(); }
+    public Store(Context c,String name) { super(c,name,null,7);context=c.getApplicationContext()==null?c:c.getApplicationContext();dataRevision=REVISIONS.computeIfAbsent(c.getDatabasePath(name).getAbsolutePath(),key->new AtomicLong()); }
+    /** Shared by every helper for this database; reading a revision performs no disk work. */
+    public long revision(){return dataRevision.get();}
+    private void dataChanged(){dataRevision.incrementAndGet();}
     @Override public void onConfigure(SQLiteDatabase db){super.onConfigure(db);db.execSQL("PRAGMA synchronous=FULL");}
     @Override public void onCreate(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE sessions (id INTEGER PRIMARY KEY, start INTEGER NOT NULL, end INTEGER, name TEXT NOT NULL, config TEXT NOT NULL, device TEXT, first_record INTEGER)");
@@ -28,6 +35,11 @@ public class Store extends SQLiteOpenHelper {
         d.execSQL("CREATE INDEX sample_third_probe_record ON samples(device,third_probe_record)");
         addFanSettingColumns(d);
         createFeelings(d);
+        createDreoTemperatures(d);
+    }
+    private static void createDreoTemperatures(SQLiteDatabase d){
+        d.execSQL("CREATE TABLE dreo_temperatures (id INTEGER PRIMARY KEY, device TEXT NOT NULL, received_at INTEGER NOT NULL, reported_at INTEGER NOT NULL, raw_temperature REAL, source_unit TEXT, temp_c REAL, segment TEXT NOT NULL, UNIQUE(device,received_at))");
+        d.execSQL("CREATE INDEX dreo_temperature_time ON dreo_temperatures(received_at,id)");
     }
     private static void addFanSettingColumns(SQLiteDatabase d){
         d.execSQL("ALTER TABLE samples ADD COLUMN fan_setting INTEGER");
@@ -44,7 +56,7 @@ public class Store extends SQLiteOpenHelper {
         d.execSQL("CREATE INDEX feeling_time ON feelings(session,time,id)");
     }
     @Override public void onUpgrade(SQLiteDatabase d,int old,int next) {
-        if(old<1||next>6||old>=next)throw new IllegalStateException("Migration required");
+        if(old<1||next>7||old>=next)throw new IllegalStateException("Migration required");
         if(old<2&&next>=2){d.execSQL("ALTER TABLE samples ADD COLUMN second_probe REAL");d.execSQL("ALTER TABLE samples ADD COLUMN phase INTEGER NOT NULL DEFAULT 0");}
         if(old<3&&next>=3)createLegacyFeelings(d);
         if(old<4&&next>=4){
@@ -66,11 +78,12 @@ public class Store extends SQLiteOpenHelper {
         }
         if(old<5&&next>=5){d.execSQL("ALTER TABLE samples ADD COLUMN third_probe REAL");d.execSQL("ALTER TABLE samples ADD COLUMN third_probe_record INTEGER");d.execSQL("CREATE INDEX sample_third_probe_record ON samples(device,third_probe_record)");}
         if(old<6&&next>=6)addFanSettingColumns(d);
+        if(old<7&&next>=7)createDreoTemperatures(d);
     }
-    public long start(String config) { ContentValues v=new ContentValues(); v.put("start",System.currentTimeMillis()); v.put("name","Sleep session"); v.put("config",config); return getWritableDatabase().insertOrThrow("sessions",null,v); }
-    public void finish(long id) { ContentValues v=new ContentValues();v.put("end",System.currentTimeMillis());getWritableDatabase().update("sessions",v,"id=?",new String[]{""+id}); }
+    public long start(String config) { ContentValues v=new ContentValues(); v.put("start",System.currentTimeMillis()); v.put("name","Sleep session"); v.put("config",config);long id=getWritableDatabase().insertOrThrow("sessions",null,v);dataChanged();return id; }
+    public void finish(long id) { ContentValues v=new ContentValues();v.put("end",System.currentTimeMillis());if(getWritableDatabase().update("sessions",v,"id=?",new String[]{""+id})>0)dataChanged(); }
     public void sample(long session,Protocol.Reading r) {
-        ContentValues v=new ContentValues();v.put("session",session);v.put("time",r.time); put(v,"probe",r.probe);put(v,"room",r.room);put(v,"humidity",r.humidity);put(v,"third_probe",r.thirdProbe);v.put("speed",0);v.put("mode",0);v.put("uptime",r.uptime);v.put("fault",r.error);getWritableDatabase().insertOrThrow("samples",null,v);
+        ContentValues v=new ContentValues();v.put("session",session);v.put("time",r.time); put(v,"probe",r.probe);put(v,"room",r.room);put(v,"humidity",r.humidity);put(v,"third_probe",r.thirdProbe);v.put("speed",0);v.put("mode",0);v.put("uptime",r.uptime);v.put("fault",r.error);getWritableDatabase().insertOrThrow("samples",null,v);dataChanged();
     }
     private void put(ContentValues v,String key,double value) { if(Double.isFinite(value))v.put(key,value);else v.putNull(key); }
     public long cursor(String device){try(Cursor c=getReadableDatabase().rawQuery("SELECT next_record FROM cursors WHERE device=?",new String[]{device})){return c.moveToFirst()?c.getLong(0):0;}}
@@ -109,16 +122,35 @@ public class Store extends SQLiteOpenHelper {
             }
             setCursor(device,index+1);feelingsChanged=resolvePendingFeelings(db,device)>0;db.setTransactionSuccessful();
         }finally{db.endTransaction();}
-        if(feelingsChanged)notifyFeelingsChanged();
+        if(feelingsChanged)notifyFeelingsChanged();else dataChanged();
         return session;
     }
     public static class Session { public long id,start,end; public int count; public String label; }
     public List<Session> sessions() { List<Session> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT id,start,COALESCE(end,0),name,(SELECT count(*) FROM samples WHERE session=sessions.id) FROM sessions ORDER BY start DESC",null)){while(c.moveToNext()){Session s=new Session();s.id=c.getLong(0);s.start=c.getLong(1);s.end=c.getLong(2);s.label=c.getString(3);s.count=c.getInt(4);out.add(s);}}return out; }
-    public static class Point { public long time; public double probe,room,humidity,secondProbe=Double.NaN,thirdProbe=Double.NaN,fanSetting=Double.NaN; public int speed,phase; public Point(long t,double p,double r,double h,int s){time=t;probe=p;room=r;humidity=h;speed=s;} }
+    public static class Point { public long time; public String segment=""; public double probe,room,humidity,secondProbe=Double.NaN,thirdProbe=Double.NaN,fanSetting=Double.NaN; public int speed,phase; public Point(long t,double p,double r,double h,int s){time=t;probe=p;room=r;humidity=h;speed=s;} }
     public static String phaseName(int phase){return switch(phase){case 1->"Baseline";case 2->"Lying on probes";case 3->"Off probes";default->"";};}
     private static double number(Cursor c,int col){return c.isNull(col)?Double.NaN:c.getDouble(col);}
     public List<Point> points(long id) {List<Point> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,probe,room,humidity,speed,second_probe,phase,third_probe,fan_setting FROM samples WHERE session=? ORDER BY time,id",new String[]{""+id})){while(c.moveToNext()){Point p=new Point(c.getLong(0),number(c,1),number(c,2),number(c,3),c.getInt(4));p.secondProbe=number(c,5);p.phase=c.getInt(6);p.thirdProbe=number(c,7);p.fanSetting=number(c,8);out.add(p);}}return out;}
     public List<Point> weather(long id){List<Point> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT time,temp,humidity FROM weather WHERE session=? ORDER BY time",new String[]{""+id})){while(c.moveToNext())out.add(new Point(c.getLong(0),number(c,1),Double.NaN,number(c,2),0));}return out;}
+    /** Receipt time is when the phone observed it, never a backfilled cloud value-change time. */
+    public void recordDreoTemperature(String device,long receivedAt,long reportedAt,Double raw,String unit,String segment){
+        recordDreoTemperature(device,receivedAt,reportedAt,raw,unit,segment,true);
+    }
+    public void recordDreoTemperature(String device,long receivedAt,long reportedAt,Double raw,String unit,String segment,boolean available){
+        if(device==null||device.isEmpty()||receivedAt<=0||segment==null||segment.isEmpty())throw new IllegalArgumentException("A Dreo observation needs a device, receipt time and collection segment.");
+        ContentValues v=new ContentValues();v.put("device",device);v.put("received_at",receivedAt);v.put("reported_at",Math.max(0,reportedAt));
+        double value=raw==null?Double.NaN:raw;put(v,"raw_temperature",value);v.put("source_unit",unit);put(v,"temp_c",available&&reportedAt>0?DreoTemperature.celsius(value,unit):Double.NaN);v.put("segment",segment);
+        if(getWritableDatabase().insertWithOnConflict("dreo_temperatures",null,v,SQLiteDatabase.CONFLICT_IGNORE)!=-1)dataChanged();
+    }
+    /** The independent cloud series may precede the later Bluetooth download of this night. */
+    public List<Point> dreoTemperatures(long session){
+        List<Point> result=new ArrayList<>();
+        String sql="SELECT t.received_at,t.temp_c,t.device,t.segment FROM dreo_temperatures t JOIN sessions s ON s.id=? WHERE t.received_at>=s.start AND t.received_at<=COALESCE(s.end,(SELECT MAX(time) FROM samples WHERE session=s.id)) ORDER BY t.received_at,t.id";
+        try(Cursor c=getReadableDatabase().rawQuery(sql,new String[]{""+session})){
+            while(c.moveToNext()){Point p=new Point(c.getLong(0),number(c,1),Double.NaN,Double.NaN,0);p.segment=c.getString(2)+":"+c.getString(3);result.add(p);}
+        }
+        return result;
+    }
     public static final String FEELING_HOT="Hot",FEELING_COLD="Cold";
     public static class FeelingEntry {
         public long id,session,time,anchorRecord;
@@ -236,7 +268,7 @@ public class Store extends SQLiteOpenHelper {
     private static void requireSession(SQLiteDatabase db,long session){
         try(Cursor c=db.rawQuery("SELECT id FROM sessions WHERE id=?",new String[]{""+session})){if(!c.moveToFirst())throw new IllegalArgumentException("Choose a recorded night.");}
     }
-    private void notifyFeelingsChanged(){context.sendBroadcast(new Intent(FEELINGS_CHANGED).setPackage(context.getPackageName()));}
+    private void notifyFeelingsChanged(){dataChanged();context.sendBroadcast(new Intent(FEELINGS_CHANGED).setPackage(context.getPackageName()));}
     private ContentValues feelingValues(long session,long time,String kind,int intensity){
         if(time<=0)throw new IllegalArgumentException("Choose a valid date and time.");
         if(!FEELING_HOT.equals(kind)&&!FEELING_COLD.equals(kind))throw new IllegalArgumentException("Choose Hot or Cold.");
@@ -263,7 +295,7 @@ public class Store extends SQLiteOpenHelper {
                 .append(',').append(entry.state).append(',').append(entry.signedValue).append(',').append(entry.localTimestamp).append(',').append(entry.zoneId).append(',').append(entry.localTimeDerived).append('\n');
         return out.toString();
     }
-    public void weather(long id,long time,double temp,double humidity,String location){ContentValues v=new ContentValues();v.put("session",id);v.put("time",time);put(v,"temp",temp);put(v,"humidity",humidity);v.put("location",location);getWritableDatabase().insertWithOnConflict("weather",null,v,SQLiteDatabase.CONFLICT_REPLACE);}
+    public void weather(long id,long time,double temp,double humidity,String location){ContentValues v=new ContentValues();v.put("session",id);v.put("time",time);put(v,"temp",temp);put(v,"humidity",humidity);v.put("location",location);if(getWritableDatabase().insertWithOnConflict("weather",null,v,SQLiteDatabase.CONFLICT_REPLACE)!=-1)dataChanged();}
     public String weatherLocation(long id){try(Cursor c=getReadableDatabase().rawQuery("SELECT location FROM weather WHERE session=? LIMIT 1",new String[]{""+id})){return c.moveToFirst()?c.getString(0):"";}}
     public String csv(long id) {
         StringBuilder b=new StringBuilder("source,time_iso_utc,body_temperature_c,room_temperature_c,humidity_percent,controller_uptime_s,fault,location,second_body_temperature_c,test_phase,third_body_temperature_c,fan_setting\n");

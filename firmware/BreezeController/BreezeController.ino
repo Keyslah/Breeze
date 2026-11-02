@@ -28,7 +28,7 @@ constexpr uint32_t BODY_SAMPLE_MS=10000, FAN_SAMPLE_MS=10000;
 #define BREEZE_VERSION_MINOR 2
 #endif
 #ifndef BREEZE_VERSION_PATCH
-#define BREEZE_VERSION_PATCH 2
+#define BREEZE_VERSION_PATCH 23
 #endif
 constexpr uint8_t FIRMWARE_VERSION_MAJOR=BREEZE_VERSION_MAJOR,FIRMWARE_VERSION_MINOR=BREEZE_VERSION_MINOR,FIRMWARE_VERSION_PATCH=BREEZE_VERSION_PATCH;
 constexpr uint8_t CAPABILITY_OTA=1;
@@ -75,7 +75,7 @@ uint8_t crc8(const uint8_t* b,int len){uint8_t crc=0;for(int i=0;i<len;i++){crc^
 uint32_t nowEpoch(){return epochBase?epochBase+(esp_timer_get_time()/1000000-clockAt):0;}
 void notifyBytes(uint8_t* b){tx->setValue(b,20);if(connected)tx->notify();}
 uint8_t flags(){return (active?1:0)|(validBody(thirdProbe)?2:0)|(isfinite(probe)?8:0)|(isfinite(room)?16:0)|(isfinite(rh)?32:0);}
-void capabilities(){uint8_t b[20]={4};b[4]=7;b[5]=FIRMWARE_VERSION_MAJOR;b[6]=FIRMWARE_VERSION_MINOR;b[7]=FIRMWARE_VERSION_PATCH;b[8]=CAPABILITY_OTA|2|4|8|16|32|64;b[9]=ota.pendingVerification()?1:0;b[10]=2;b[11]=BreezeTelemetryCadence::FULL_PERIOD_MS/1000;notifyBytes(b);}
+void capabilities(){uint8_t b[20]={4};b[4]=7;b[5]=FIRMWARE_VERSION_MAJOR;b[6]=FIRMWARE_VERSION_MINOR;b[7]=FIRMWARE_VERSION_PATCH;b[8]=CAPABILITY_OTA|2|4|8|16|32|64;b[9]=ota.pendingVerification()?1:0;b[10]=3;b[11]=BreezeTelemetryCadence::FULL_PERIOD_MS/1000;b[12]=1;b[13]=fan.irTiming();b[14]=fan.softwareBurstCount();b[15]=2;notifyBytes(b);}
 void telemetry(){
   // Confirm the button press before sending supplementary controller status.
   uint8_t b[20]={1};b[1]=flags()|(active&&storageOK?64:0)|(storageOK?128:0);put16(b+2,++sequence);put16(b+4,isfinite(probe)?lroundf(probe*100):0);put16(b+6,isfinite(room)?lroundf(room*100):0);put16(b+8,isfinite(rh)?lroundf(rh*100):0);put16(b+10,validBody(thirdProbe)?lroundf(thirdProbe*100):0);put32(b+12,millis()/1000);put16(b+16,ack);b[18]=errorCode;b[19]=commandError;notifyBytes(b);

@@ -9,11 +9,13 @@ import java.util.Locale;
 
 /** The History readout style, without trace controls, for the controller's live values. */
 public final class LiveReadingDetailsView extends LinearLayout {
-    private static final int[] SERIES={0,1,GraphView.D2_BODY_SERIES,GraphView.HIGHEST_BODY_SERIES,2,4};
+    private static final int[] SERIES={GraphView.HIGHEST_BODY_SERIES,2,4,0,1,GraphView.D2_BODY_SERIES};
     private final TextView[] values=new TextView[SERIES.length];
+    private final LinearLayout secondary;
 
     public LiveReadingDetailsView(Context context){
         super(context);setOrientation(VERTICAL);setPadding(dp(10),dp(6),dp(10),dp(6));
+        secondary=new LinearLayout(context);secondary.setOrientation(VERTICAL);secondary.setPadding(dp(10),dp(6),dp(10),dp(6));secondary.setTag("homeSecondaryReadings");
         for(int row=0;row<3;row++){
             LinearLayout line=new LinearLayout(context);line.setOrientation(HORIZONTAL);
             for(int column=0;column<2;column++){
@@ -24,18 +26,19 @@ public final class LiveReadingDetailsView extends LinearLayout {
                 cell.addView(label,new LayoutParams(-1,-2));cell.addView(value,new LayoutParams(-1,-2));
                 LayoutParams slot=new LayoutParams(0,-1,1);if(column==0)slot.setMarginEnd(dp(12));line.addView(cell,slot);
             }
-            addView(line,new LayoutParams(-1,0,1));
+            (row==0?this:secondary).addView(line,new LayoutParams(-1,0,1));
         }
     }
 
     public void showReading(Protocol.Reading reading,Protocol.FanState fan,boolean fahrenheit){
         double d0=reading==null?Double.NaN:reading.probe,d1=fan==null?Double.NaN:fan.secondProbe,d2=reading==null?Double.NaN:reading.thirdProbe;
         double highest=Double.NaN;for(double body:new double[]{d0,d1,d2})if(Double.isFinite(body))highest=Double.isFinite(highest)?Math.max(highest,body):body;
-        double[] numbers={d0,d1,d2,highest,reading==null?Double.NaN:reading.room,reading==null?Double.NaN:reading.humidity};
+        double[] numbers={highest,reading==null?Double.NaN:reading.room,reading==null?Double.NaN:reading.humidity,d0,d1,d2};
         for(int index=0;index<values.length;index++){
             double number=numbers[index];String display=!Double.isFinite(number)?"—":SERIES[index]==4?String.format(Locale.US,"%.1f%%",number):String.format(Locale.US,"%.1f°%s",fahrenheit?number*1.8+32:number,fahrenheit?"F":"C");
             if(!display.contentEquals(values[index].getText()))values[index].setText(display);
         }
     }
+    public LinearLayout secondaryReadings(){return secondary;}
     private int dp(float value){return Math.round(value*getResources().getDisplayMetrics().density);}
 }

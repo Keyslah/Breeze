@@ -6,7 +6,7 @@ import java.util.Set;
 
 /** Strict wake-prefixed commands for silent bedside feeling logging. */
 public final class BedtimeVoiceCommand {
-    public enum Kind { IGNORE, INVALID, READY, STOP, FEELING }
+    public enum Kind { IGNORE, INVALID, READY, STOP, FEELING, POWER, LOGIC, OSCILLATE, FIX_FAN }
 
     public final Kind kind;
     public final String state;
@@ -42,6 +42,17 @@ public final class BedtimeVoiceCommand {
         if (words.length - at == 2 && words[at].equals("stop") && words[at + 1].equals("listening")) {
             return result(Kind.STOP);
         }
+        if (words.length - at == 1) {
+            Kind action = switch (words[at]) {
+                case "power" -> Kind.POWER;
+                case "logic" -> Kind.LOGIC;
+                case "oscillate" -> Kind.OSCILLATE;
+                default -> null;
+            };
+            if (action != null) return result(action);
+        }
+        if (words.length - at == 2 && words[at].equals("fix") && words[at + 1].equals("fan"))
+            return result(Kind.FIX_FAN);
         if (words[at].equals("log")) at++;
         if (at == words.length) return result(Kind.INVALID);
         String state = words[at++];
@@ -86,6 +97,7 @@ public final class BedtimeVoiceCommand {
         for (String wake : new String[]{"breeze", "hey breeze"}) {
             phrases.add(wake);
             phrases.add(wake + " stop listening");
+            for (String action : new String[]{"power", "logic", "oscillate", "fix fan"}) phrases.add(wake + " " + action);
             for (String log : new String[]{"", "log "}) {
                 String lead = wake + " " + log;
                 if (!log.isEmpty()) phrases.add(lead.trim());

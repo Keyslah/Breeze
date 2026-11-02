@@ -1,6 +1,154 @@
 # Breeze IR transmitter troubleshooting handoff
 
-## Current handoff: Setup and Logic review — October 9, 2026
+## Current handoff: keep the fan's display on — October 10, 2026 (afternoon)
+
+**Working configuration found at 3:20–3:55 pm: Dreo's Display Auto Off turned
+off, and Breeze's idle time 0 (no double hits).** With that, every command whose
+result the user read in Dreo landed as one burst: Speed + (1 to 2), Power on,
+Power off after seven minutes without a command, Power on again, then six
+Speed + sent as three pairs after pauses of 90–100 s (2 to 8). Ten of ten.
+Logic was then resumed on the controller and, with no probe being worn, sent
+seven Speed - and Power within ten seconds, ending at estimate Off. The user
+found the fan off, turned it on from Dreo, saw speed 1 and turned it off
+again, so all eight of Logic's commands landed.
+
+Those checks were sent from the PC with the user reading Dreo on another phone,
+because the Pixel 6 had locked. Dreo showed the power-off several minutes late,
+which was first misread as a miss.
+
+An automated run through the Breeze app on the Pixel 6 that evening (8:42–9:04 pm,
+`app_sync_run.py`) confirmed it: 16 presses, pauses from 3 s to 4 min, Power off
+and on twice, and Breeze's estimate matched Dreo at all 14 comparisons. Still
+open: an overnight run with Logic driving.
+
+Every phone sends its own saved idle time on connect. Both phones now have 0;
+a phone set back to 60 would make every command after a pause count twice
+while the display stays lit.
+
+Before that configuration, with Display Auto Off enabled, the fan did not act
+on most of the controller's IR bursts, and no double-hit timing rule fixed it.
+Measurements and the exact logs are in [validation history](docs/VALIDATION.md).
+
+What was measured, with Dreo 3.7.6 on a Pixel 6 as the independent reading:
+
+- **The fan answers in stretches.** 11:38–11:43: 16 presses, 15 steps, the
+  missing one being the first press on a dark display. 10:54–11:32: 35 bursts,
+  1 step. 13:10–13:45: 73 bursts, 0 steps. Nothing on the controller changed
+  between good and bad stretches.
+- **A dark display rarely catches a burst.** Of 58 presses sent to a display
+  that had gone dark, 7 were caught, and a caught press only lights the
+  display. Seven wake attempts four times longer than the learned burst
+  caught nothing. While the display was known to be lit, 26 of 30 speed presses
+  counted. These two effects were not separated: every lit-display sample comes
+  from a stretch in which the fan was answering.
+- **The display goes dark 60–62 s after the last counted press.** Single
+  presses counted at 60.1, 60.2 and 60.2 s and were swallowed at 62.3, 64.3
+  and 64.3 s. The earlier rule (second burst from exactly 60 s) therefore
+  double-steps in that last second or two.
+- **Power was never seen to work.** Four Power bursts, two of them 18 s after a
+  counted speed press, left the fan running.
+- **Dreo can show a change late.** One step appeared more than ten seconds
+  after it happened. Re-enter the Dreo screen between reads and wait about 20 s
+  before calling a press missed.
+
+What is installed:
+
+- **Firmware 1.2.21**, startup-confirmed, six learned slots retained. It times
+  the IR carrier and pulses with the RMT peripheral instead of software loops
+  that Bluetooth could interrupt, falling back to the old sender only if the
+  timer cannot start. With an idle time T it treats the display as lit before
+  0.875 T, dark from 1.1 T, and in between holds the command until 1.1 T, then
+  sends the burst twice. The first press after a restart is sent twice.
+  Hardware timing did not make the fan answer more often: bad stretches look
+  the same on 1.2.18, 1.2.19, 1.2.20 and 1.2.21.
+- **Controller state when this was written:** estimate Off, Logic running,
+  idle time 0. The Pixel 8 Pro app re-applies its own range and its own idle
+  time when it next connects.
+- **App:** the build with the hold notice
+  (`app/out-dreo-sync-20261010/outputs/apk/debug/app-debug.apk`) is on both
+  phones, with idle time 0 saved on each. The Pixel 6's settings are a copy of
+  the Pixel 8 Pro's with Logic paused, so it pauses Logic whenever it connects.
+
+Not done: no overnight run with Display Auto Off turned off; emulator checks
+and lint were not rerun for the new app build.
+
+Next steps: run `lit_run.py <label> <presses> <spacing> always` and an overnight
+comparison once the Pixel 6 is unlocked and kept awake; keep Display Auto Off
+off and idle time 0 on every phone. If the display has to sleep at night, the
+alternatives are a stronger IR drive or reading the fan's real state from Dreo.
+Preserve learned codes, recordings and the Logic profile.
+
+Tools (git-ignored): `app/out-dreo-sync-20261010/` holds `probe.py` (phone:
+reads Breeze's service dump and Dreo's screen, taps Breeze buttons), `rig.py`
+(PC Bluetooth sends with a continuous Dreo watcher), `campaign.py`,
+`lit_run.py`, and the logs `probe-log.jsonl` and `rig-log.jsonl`. Wait for the
+app-switch animation before tapping: one early tap landed on Power.
+
+## Prior handoff: Dreo comparison and remaining mismatches — October 10, 2026
+
+The installed Android update fixes retrying a failed current-setting correction
+with the same value; HomeMotion and BleRecovery regressions pass. It does not
+establish a fix for every Speed+/Speed- counter mismatch. Firmware remains 1.2.18.
+
+Live ADB inspection of Dreo 3.7.6 supplies independent fan-state observations.
+White/selected buttons are active: Normal was selected, Horizontal and Vertical
+were off. With the saved idle timeout at 60 seconds, one actual Breeze Speed+
+tap emitted two bursts and changed Dreo from 1 to 3 while Breeze advanced to 2.
+Other idle pairs produced only one actual step. Display sleep can consume the
+first press, while an awake fan can accept both; controller idle time alone
+does not reveal the fan's actual display/wake state.
+
+Disabling Dreo Display Auto Off and repeats passed two long-idle single-command
+checks, but a later Speed- still changed the controller estimate from 3 to 2
+while Dreo remained 3 for about 36 seconds. Dreo reporting can lag, and the
+probe allowed repeated snapshots before stopping. No unintended oscillation
+was observed. There is no confirmed touch-routing or waveform cause for that
+symptom. Do not infer physical reception from a BLE ACK or transmission counter.
+
+The last verified fan and controller setting is 2, Normal, both oscillations
+off. Original Display Auto Off and the 60-second repeat timeout were restored.
+Details and installed APK hash are in [validation history](docs/VALIDATION.md).
+Preserve learned codes and recordings; further IR changes need evidence of the
+remaining failure, not a speculative replacement timing rule.
+
+## Prior handoff: configurable idle double hits — October 10, 2026
+
+The user woke to physical fan setting 3 while Breeze and Logic reported 1.
+Firmware 1.2.16 sends a second full command after more than
+60 seconds without a transmission, 300 ms after the first finishes, while
+advancing its estimate only once. Phone traces confirm these extra sends,
+including a single Speed+ tap at 09:02:53 that produced counters 124 and 125
+with the same estimated setting 2. The user now reports that the original
+remote changes speed immediately after idle.
+
+Firmware 1.2.18 makes the repeat user-controlled through one Setup field:
+**Idle time (seconds)**. Zero is the default and disables double hits; 1–3600
+repeats the first command after that many idle seconds. There is no checkbox.
+The field saves on Done or leaving Setup, and the value persists on the phone
+and controller. Changing it cancels any queued repeat. It applies to manual,
+target and automatic sends while preserving full learned Symphony bursts and
+the one-second minimum between automatic actions. A repeat remains 300 ms
+after the first burst finishes; the estimate advances once for the pair.
+
+Host tests cover timeout boundaries, cancellation, persistence, complete
+waveforms and default single-send estimate alignment. Android unit and emulator
+checks cover saving, old firmware, reconnects, failures and unchanged Logic
+and recording state. These are software checks, not physical fan feedback.
+Firmware 1.2.18 is installed and startup-confirmed, with all six learned slots
+retained and no IR sends during passive verification. The recording was already
+stopped before the update. Its companion app is installed on Pixel 8 Pro; Setup
+shows the single field at 0 and confirms **Double hits off**. Database and
+preference files were unchanged by installation. Any existing speed offset needs
+a fresh physical setting confirmation.
+
+No overnight session was saved between 00:28 and the new recording at 09:02,
+and the phone was disconnected for most of that interval. The duplicate
+mechanism can reproduce the reported offset, but the exact overnight cause
+and reception of every IR command remain unproven. Preserve the learned codes,
+recordings and current Logic profile. Double hits now depend solely on the
+user's saved idle-time value; do not reintroduce a separate forced timeout.
+
+## Prior handoff: Setup and Logic review — October 9, 2026
 
 Start with [Setup redesign and fan Logic investigation](docs/SETUP_REDESIGN_REVIEW.md).
 Firmware 1.2.14 is installed and startup-confirmed. The latest reported failure

@@ -14,6 +14,7 @@ public class FanProtocolTest {
         b[4]=11;assertThrows(IllegalArgumentException.class,()->Protocol.decodeFan(b,1));b[4]=10;b[5]=11;assertThrows(IllegalArgumentException.class,()->Protocol.decodeFan(b,1));
     }
     @Test public void typeSixRecordsCarrySecondProbeWithoutLegacySpeedBounds(){byte[] b=new byte[20];b[0]=6;b[1]=2;ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN).putShort(16,(short)3130);b[18]=(byte)192;b[19]=(byte)Protocol.crc8(b,19);Protocol.validateRecord(b);b[16]^=1;try{Protocol.validateRecord(b);fail();}catch(IllegalArgumentException expected){}}
+    @Test public void heldPressFlagIsSeparateFromTargetWork(){byte[] b=state();Protocol.FanState f=Protocol.decodeFan(b,1);assertFalse(f.held());b[1]=64;f=Protocol.decodeFan(b,1);assertTrue(f.held());assertFalse(f.busy());assertFalse(f.synced());b[1]=32|4;f=Protocol.decodeFan(b,1);assertFalse(f.held());assertTrue(f.busy());assertTrue(f.synced());}
     @Test public void malformedStateRejected(){for(int index:new int[]{4,5,6,7,11,14,15,18,19}){byte[] b=state();b[index]=99;try{Protocol.decodeFan(b,0);fail("accepted field "+index);}catch(IllegalArgumentException expected){}}}
     @Test public void noAutomaticRulesReportedExplicitly(){assertTrue(Protocol.error(30).contains("not defined"));assertEquals("Command not learned",Protocol.error(20));}
 }

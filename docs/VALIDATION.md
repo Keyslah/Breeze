@@ -1,5 +1,417 @@
 # Breeze validation history
 
+## Android responsiveness, reading order and Dreo temperature - October 27, 2026
+
+- Removed the repeated paused-voice status broadcast/notification loop. UI broadcasts
+  are coalesced; unchanged history snapshots do not repeat SQL queries or rebuild
+  the graph. History reads, CSV exports and durable BLE record writes run on workers.
+  Download confirmation still follows the durable commit; queued writes drain before
+  storage closes, and stale connection callbacks cannot advance the new connection.
+- Home puts highest body temperature and room temperature first, current fan setting
+  next, and individual probes at the bottom. Graph readings put highest body, room
+  and fan before outdoor weather and individual probes. The smoothing control is
+  below those readings and the highest-body label has no parenthetical suffix.
+- Body, ambient temperature and fan scales are independent. Body readings below
+  90°F are excluded from graph traces, readouts, range calculation and smoothing;
+  excluded intervals remain gaps. Raw records, CSV values, live readings and Logic
+  inputs are preserved. Room, outdoor and Dreo temperatures are not filtered.
+- Optional Dreo temperature uses existing 180-second cloud polling without adding
+  requests. The installed Dreo 3.7.8 HAF008S/AF004 implementation establishes the raw
+  field as Fahrenheit; Breeze stores it and converts to Celsius explicitly. Receipt
+  and reported-change timestamps are retained separately. Missing readings, restart
+  boundaries and gaps over 240 seconds are not connected. This does not backfill
+  periods when the phone was off and does not alter ESP fan control.
+- Schema 6 -> 7 migration was exercised on a disposable copy of the actual phone
+  database. SQLite integrity checks passed before and after. Complete-row SHA-256
+  fingerprints matched for 23 sessions, 128880 samples, 34 weather rows, 7 feelings
+  and 1 cursor. The new Dreo table initially contains 0 rows.
+- Final debug APK/test APK assembly passed; 204 JVM tests passed with 0 failures,
+  0 errors and 0 skipped tests. Lint reported 0 errors and 40 warnings. All 12 focused
+  emulator check groups passed: axes/cutoff, history refresh, record storage, Dreo
+  temperature, voice power policy, history zoom, BLE recovery, fan-setting storage,
+  third-probe storage, signed feelings, Home interactions and actual-history migration.
+  Twenty unchanged UI refreshes performed 0 additional history queries and 0 graph
+  reloads; 100 repeated paused voice checks emitted 0 duplicate updates. Home checked
+  31 decor touches plus 6 injected Power/Speed touches using an isolated fake controller.
+- APK: `app/out-performance-layout-20261027/outputs/apk/debug/app-debug.apk`,
+  86917517 bytes; SHA-256
+  `EE9D1289C235F3D179D1206345AC92C75FD1CACE403634F1BD7FBB3BD22CB8D5`.
+  Behavior tests used the task-created headless emulator. No ESP update, physical
+  fan command or physical phone response-time measurement was performed. Synthetic
+  off-screen graph renders were inspected; these are not phone screenshots.
+- After explicit user authorization, installed that APK with `adb install -r` on
+  Pixel 8 Pro `37260DLJG00508`; the installed APK SHA-256 matches the tested build.
+  Preserved a fresh pre-install archive of 23 database/preference files. All 22
+  non-trace files are byte-identical after installation; only the fan-command trace
+  preference changed while the previous app was running. No data was cleared.
+  The agent did not open or manipulate the physical phone UI after installation.
+  Evidence: `diagnostics/performance-layout-20261027/phone-install-20261027/`.
+- Artifacts and the pre-edit source archive are in
+  `diagnostics/performance-layout-20261027/`; the original phone evidence remains in
+  `diagnostics/night-review-20261027/`. Existing uncommitted work is preserved.
+
+## Fan voice commands without recording - October 24, 2026
+
+- Live diagnosis found listening enabled, microphone permission granted and
+  plugged-only mode satisfied, but no microphone service because sensor recording
+  was stopped. Fan commands had inherited the older recording-only listener gate.
+- Decoupled fan listening from recording. Enabled listening starts from the
+  unlocked, visible app; power, Logic, horizontal oscillation and Dreo sync work
+  while recording is idle. Warm/cold persistence still requires an actual recording.
+  Pause survives idle telemetry; Disable and plugged-only restrictions remain
+  authoritative. Recording stop/failure/timeout does not terminate fan listening.
+- App/test APK assembly, all **198 JVM tests**, and lint passed (zero errors,
+  43 warnings). The isolated power-policy fixture also passed on Pixel 8 Pro,
+  checking idle fan eligibility, idle feeling rejection, recording boundaries,
+  unplug/replug, Pause/Disable and absence of background service cold starts.
+- Installed `app/out-independent-voice-20261024/outputs/apk/debug/app-debug.apk`
+  with `adb install -r`. Installed SHA-256 matches
+  `8E75691007C7334E197618B05C4168136BE912DAD85D39885F9B63D64B1FF97E`.
+  All 23 database/preference files were byte-identical before and after installation
+  and the isolated fixture. No ESP update or physical fan command was performed.
+- Reopened the app and verified the actual voice service reports `ready=true`,
+  `captureReady=true`, `recognitionAllowed=true`, `workerAlive=true`,
+  `inputBlocked=false` and `feelingRecordingActive=false`. Controller recording
+  remained off. This confirms the microphone/model lifecycle fix; real spoken
+  command reception and the physical fan response require the user's check.
+- Local evidence is under `app/out-independent-voice-20261024/deployment/`.
+
+## Phone and cumulative-window firmware installed - October 24, 2026
+
+- Updated the USB-connected Pixel 8 Pro with `adb install -r` using the final
+  voice/power/smoothing APK. Installed SHA-256 matches
+  `7201634748EA85BA909A3B68FF473426D180240BE7A38517A4B61E935ED2CE5F`.
+- A complete private-data tar was saved before installation. All 23 database
+  and preference files were byte-identical immediately after installation.
+  SQLite integrity passed; the real database retains 20 sessions, 116,767
+  samples, 34 weather rows, 3 feelings and its cursor. No app data was cleared.
+- Remotely entered OTA from firmware 1.2.22 and installed the previously built
+  1.2.23 image over the temporary Wi-Fi network. Health verification reports
+  rollback pending false, cumulative-window capability 2, learned mask 63,
+  hardware-timed IR, zero software bursts and zero post-boot IR transmissions.
+  No physical fan command was sent during preparation or firmware verification.
+- Controller archive identity `1711897709`, base/total `268353`, stopped recording
+  and ready storage match before and after the update. The deployment metadata
+  checks requested only the end cursor; they did not retire or download records.
+- Reopened Breeze and verified its connection to firmware 1.2.23, matching phone
+  cursor, no telemetry/command errors, and acknowledged restoration of the saved
+  clock, Logic profile, boost settings and daily window. The persisted microphone
+  disable setting remains enabled.
+- The normal three-minute Dreo confirmation cycle accepted Normal mode, power
+  Off and retained speed 6. Used that accepted report to restore the retained
+  setting with Logic temporarily paused and `SYNC 6` followed by `SYNC 0`.
+  This restored synchronized Off without IR transmission (counter stayed zero),
+  then restored the previously observed Logic-on state with `AUTO 1`. Final BLE
+  status confirms Logic on, synchronized Off, no errors, learned mask 63 and
+  IR counter zero. These are Dreo-reported settings, not independent visual
+  confirmation of the fan. The phone locked before the final app reopen;
+  Breeze is queued to reconnect when unlocked, while the ESP retains its
+  already-restored profile and clock.
+- Evidence and private backups are local and Git-ignored under
+  `app/out-voice-power-smoothing-20261024/deployment/`. Actual speech recognition,
+  graph appearance and timed physical fan behavior were not tested by this install.
+
+## Cumulative daily windows - October 24, 2026 (local build only)
+
+- Setup supports any number of editable time windows. **Add window** follows
+  the final row; each checkbox disables that window without removing its times
+  or adjustment. Add/remove/enable changes remain drafts until Apply. Existing
+  single-window profiles migrate without changing their settings; named copies
+  preserve the entire list, including disabled windows.
+- Overlaps sum before the final Off–H clamp: −1 plus −3 becomes −4. The phone
+  compiles an unrestricted list into equivalent daily intervals; firmware
+  1.2.23 evaluates the schedule independently of the phone. Atomic uploads
+  require all intervals before COMMIT; legacy enabled multi-window uploads
+  show a firmware-update message instead of silently applying only one.
+- **166 JVM tests passed**, zero failures/errors/skips. Tests include 2,000
+  saved windows, all 1,440 local minutes and every base fan level, mixed signs,
+  overnight/full-day boundaries, migration, detached copies and wire packets.
+- Seven host firmware suites passed: `logic_window_test.py`,
+  `logic_control_test.py`, `fan_boost_limit_test.py`,
+  `fan_automatic_interval_test.py`, `fan_first_send_test.py`,
+  `fan_double_hit_test.py`, and `ir_test.py`. They cover incomplete/invalid
+  replacement, 1,440 distinct minute intervals, signed cancellation, boost,
+  pause, repeated synchronization, and baseline preservation.
+- App and instrumentation APKs assembled; Android lint completed with zero
+  errors / 41 warnings. Extended isolated Activity/service instrumentation
+  checks were compiled but not run; no emulator, phone, controller or desktop
+  UI was operated. Physical UI and timed fan behavior remain unverified.
+- APK: `app/out-multi-windows-20261024/outputs/apk/debug/app-debug.apk`.
+  Firmware: `firmware/out-multi-windows-20261024/BreezeController.ino.bin`,
+  version **1.2.23**, 1,620,496 bytes; OTA slot headroom 148,976 bytes.
+  Build verified the existing partition layout. Firmware SHA-256:
+  `B5BF3A0646274A91FB10250587595E7A8A7D76ADF3565935B2973673C8E8DE4D`.
+- Neither artifact was installed. Multiple windows require the matching
+  controller update as well as the APK; reconnect Breeze afterward to restore
+  the RAM-resident daily schedule and clock.
+
+## Temporary drift event windows - October 13, 2026
+
+- Android build `app/out-drift-window-release-20261013` passed app/test APK
+  assembly, all 156 JVM tests (19 new diagnostic tests), and lint with zero
+  errors / 41 warnings.
+- API-35 emulator fixtures exercised the real correction queue: an incident
+  archive exists before SYNC_SPEED is submitted; write/ACK handling and paused
+  Logic are preserved. Busy mismatches are retained without sending correction;
+  busy matches do not discard temporary evidence. No fixture controlled the fan.
+- Tests cover match rollover, complete windows beyond the old 16K limit,
+  restart retention, command gaps/wrap/restarts, boost/window telemetry,
+  rejected checks, archive failure/recovery and partial-line preservation.
+- Debug APK installed on Pixel 8 Pro with `adb install -r`, retaining app data.
+  The phone was locked: Activity launch succeeded, but the BLE service had not
+  started. Open Breeze to reconnect and begin the new diagnostic capture.
+- Firmware was not rebuilt or flashed. FanRemote.cpp/.h, LogicControl.h and
+  IrOutput.h still match the saved deployed 1.2.22 build apart from generated
+  line directives. No boost, time-window or IR transmission behavior changed.
+- The earlier uninstalled speculative Dreo timestamp filter was removed. The
+  original version/settling policy and three-minute cadence remain intact.
+- These diagnostics capture received observations, not physical IR reception.
+  Previous lost command events are not reconstructed; future missing telemetry
+  is flagged explicitly. Old correction history and graph data are preserved.
+
+
+## Daily Logic window and phone correction history — October 11, 2026
+
+- Android debug APK/unit tests/lint/instrumentation APK built. **137 JVM tests
+  passed**, no failures/skips; lint reported zero errors and 40 warnings.
+- Isolated API-35 emulator checks passed for the time-window upload sequence,
+  old-firmware gating, failures without commit, paused/explicit-resume behavior,
+  queued profile replacement, actual named-profile UI save/load/draft/Apply,
+  overnight windows, persistent disable, and Dreo correction history. The
+  emulator was closed; none of these fixtures controlled the real fan.
+- Seven desktop firmware suites passed: `logic_window_test.py`,
+  `logic_control_test.py`, `ir_test.py`, `fan_double_hit_test.py`,
+  `telemetry_cadence_test.py`, `fan_automatic_interval_test.py`, and
+  `ir_nvs_migration_test.py`. These include start/end/midnight boundaries,
+  clamping, no repeated subtraction or Off wrap, boost, Dreo baseline handling,
+  DST transition/millis rollover, and clock updates during recording without
+  changing archive timestamps.
+- Pixel 8 Pro app data was backed up locally to the ignored build directory
+  (51 tar entries verified), then the app was updated using `adb install -r`.
+  Installed APK hash matches
+  `08949EEA0CB2E68B3DA6979FABB3C6ECDCAE5FFA81A3774267E89D4D0004B944`.
+  Dreo sign-in remained usable, Bluetooth reconnected, the controller stayed
+  at Off with IR send counter 148, and the new correction count was zero.
+- APK: `app/out-time-window-20261011/outputs/apk/debug/app-debug.apk`.
+  Firmware 1.2.22: `firmware/out-time-window-20261011/BreezeController.ino.bin`,
+  1,620,256 bytes, 149,216 bytes of OTA-slot headroom, SHA-256
+  `C776051F09AD331D2216FC9EFA99F822871758F1B02F12BC9D76D2215FBA6166`.
+- Completed remote BLE/Wi-Fi OTA from **1.2.21 to 1.2.22**, using opcode
+  7/action 1; no BOOT-button action was required. The owner confirmed the fan
+  was Off and resumes at 1. Preparation paused Logic and invalidated the old
+  estimate without IR (counter 152 stayed 152); the Wi-Fi upload was accepted.
+  Post-reboot checks confirmed rollback pending false, learned mask 63,
+  hardware IR active, zero software bursts and no telemetry errors. Off and
+  retained level 1 were restored with synchronization packets only; the new
+  boot's IR counter stayed zero. The phone reconnected to **1.2.22**, reported
+  Off, no command error, and a successful Dreo read with the saved sign-in.
+- The window is saved disabled by default until the owner enables and applies
+  it. No physical timed adjustment has yet been observed; boundary behavior
+  was tested through the real firmware code in the isolated harness. RAM
+  window/clock must be restored by reconnecting after an ESP reboot.
+
+## Fan reception, hardware-timed IR and the display band — October 10, 2026 (afternoon)
+
+Setup for every measurement below: Dreo 3.7.6 on a Pixel 6 (USB adb) read
+through its accessibility tree; Normal mode, both oscillations off, Display Auto
+Off enabled throughout; Logic paused; double hits off unless stated. Presses
+came from Breeze's Home buttons on that phone, or from the PC over Bluetooth
+(`rig.py`) so Dreo could stay on screen. Logs: `app/out-dreo-sync-20261010/`
+(`probe-log.jsonl` for phone runs, `rig-log.jsonl` for PC runs).
+
+- **Reception by stretch.** Firmware 1.2.18, 10:54–11:32: 35 bursts, 1 step.
+  Firmware 1.2.19, 11:38–11:43: 16 presses, 15 steps (the first followed more
+  than six minutes without a press). Firmware 1.2.19, 12:08–12:54: 21 probes
+  of three presses 1.4 s apart, each at least 93 s after the previous burst,
+  moved the fan 2 steps four times, 1 step three times and 0 steps fourteen
+  times. Firmware 1.2.20, 13:10–13:35: 68 bursts, 0 steps. Firmware 1.2.21,
+  13:42–13:44: 5 bursts, 0 steps.
+- **Display time.** Two quick presses to light the display, then one opposite
+  press G seconds after the second: counted at G = 60.2 and 60.2 (and 60.1 in
+  an earlier phone run); not counted at 62.3, 64.3, 64.3, 90.2, 90.3, 90.3 and
+  90.3. A press that is not counted can also be a lost burst, so the dark edge
+  rests on three agreeing samples at 62–64 s.
+- **Dark display.** 58 presses were sent to a display that had gone dark and had
+  a determinable outcome; 7 were caught. A caught press never changed the
+  speed. Ten wake trials (wake attempt, then the learned press 3 s later, each
+  after 95 s idle) caught none: seven used four learned frame trains joined
+  into one burst, three used the learned burst.
+- **Lit display.** 30 speed presses were sent up to 60.2 s after a press known
+  to have counted; 26 counted. All of them fall in stretches where the fan was
+  answering, so this does not show what a lit display does in a bad stretch.
+- **Power.** Four Power bursts (10:54:56, 11:58:20, 13:01:00, 13:02:59), the
+  last two 18 s after a counted speed press, did not turn the fan off.
+- **Dreo lag.** One step appeared in Dreo more than ten seconds after the
+  press. PC-driven reads leave and re-enter the Dreo screen, wait 18–22 s after
+  the last press and need three agreeing reads.
+- **Not read-only:** opening Breeze on the Pixel 8 Pro at 10:54 resumed Logic,
+  which sent Speed -, its repeat and Power. None changed the fan. One phone
+  tap issued during an app-switch animation landed on Power (11:58:20).
+
+Display Auto Off turned off (3:20–3:55 pm), firmware 1.2.21, idle time 0:
+
+- The Pixel 6 had locked, so commands went from the PC (`rig.py ... blind`) and
+  the user read Dreo on another phone and reported each result. The user turned
+  Display Auto Off off and set the fan to 1 from the Dreo app first.
+- Results read by the user: Speed + at 3:21:14 moved 1 to 2. With the fan then
+  turned off from Dreo, Power at 3:29:55 turned it on at 2. Power at 3:37:03,
+  seven minutes after the previous burst, turned it off; Dreo showed that only
+  minutes later and it was first reported as a miss. Power at 3:43:23 turned it
+  on at 2. Six Speed + at 3:45:03/07, 3:46:37/40 and 3:48:11/14, each pair
+  90–100 s after the previous burst, ended at 8. Ten presses, ten counted.
+- Not usable: three Speed + at 3:22–3:25 and six at 3:39–3:42 went out while
+  the fan was off or may have been.
+- Logic resumed from the PC at 3:52:27 with body 78.4 °F and room 75.5 °F:
+  seven Speed - one per 1.1–1.2 s, then Power at 3:52:37; estimate Off, send
+  counter 32, no software-timed bursts. The user found the fan off, turned it
+  on from Dreo, saw speed 1 and turned it off again: all eight landed.
+
+Through the Breeze app, same configuration (8:42–9:04 pm, `app_sync_run.py`):
+
+- Breeze's Home buttons were tapped on the Pixel 6 and Dreo read on the same
+  phone. Power on from Off, ten speed presses after pauses of 26, 91, 20, 150,
+  3, 76, 241, 10, 120 and 46 s, Power off, Power on 121 s later, two more speed
+  presses after 30 and 181 s, Power off. Every press was one burst.
+- Breeze's estimate equalled Dreo at all 14 comparisons (Off, 1, 2, 4, 4, 3, 3,
+  4, 3, Off, 3, 4, 3, Off), each on the first read. Afterwards Breeze was closed
+  on the Pixel 6 and Logic resumed from the PC; the controller reported
+  automatic, estimate Off, send counter 48, no software-timed bursts.
+- The same APK was installed on the Pixel 8 Pro over its data at about 8:30 pm;
+  hashes match, its settings file was unchanged and already held idle time 0.
+
+Firmware and app:
+
+- `IrOutput.h` sends raw bursts through the RMT peripheral: 1 µs ticks, the
+  learned carrier at 50 % duty on the high level, idle low, a zero-length half
+  as end marker, marks or spaces longer than 15 bits split at the same level.
+  If the timer cannot attach or a write fails, that burst goes out through the
+  library's software timing and is counted. Capability byte 13 reports the
+  timer, byte 14 the count. Library-timed protocols get the pin back first.
+- `FanRemote` judges the display from the last press it sent (the receiver
+  check does not count): lit before 0.875 T, dark from 1.1 T, where T is the
+  saved idle time. In between, manual presses are accepted, flagged in status
+  byte 1 bit 6 and sent from `tick()` once dark; automatic and target steps
+  wait without cancelling. Before any press since boot the display is taken as
+  dark. Zero still disables all of this.
+- The app decodes the held flag, shows "Waiting for the fan's display to turn
+  off, then sending." on Home, refuses further presses meanwhile, and prints
+  the timer state and idle time in the service dump.
+- Host tests pass: `ir_output_test.py` (new), `fan_double_hit_test.py`
+  (rewritten for the bands), `ir_test.py`, `fan_first_send_test.py`,
+  `fan_automatic_interval_test.py`, `ir_nvs_migration_test.py`,
+  `ir_symphony_replay_test.py`, `logic_control_test.py`, `session_test.py`,
+  `telemetry_cadence_test.py`, `third_record_test.py`. Deliberately breaking
+  the mark/space levels or the fallback counter fails `ir_output_test.py`.
+- Android app and test assembly and all 99 JVM tests pass. Lint and the emulator
+  HomeMotion and BleRecovery checks were not rerun.
+- Firmware 1.2.21: `firmware/out-display-band-20261010/BreezeController.ino.bin`,
+  1,619,216 bytes, 150,256 bytes of OTA headroom, SHA-256
+  `73577839E02354A6CDAF08DEB04EF0A7F4000289A81E8F3781DD8A7FBB7E13D9`. Wi-Fi OTA
+  accepted it; passive Bluetooth status then showed 1.2.21, rollback pending
+  false, learned mask 63, timer attached, no software-timed bursts and send
+  counter 0. 1.2.19 (timer only) and 1.2.20 (also a four-train wake burst and a
+  single Power press while Off, both since removed for lack of evidence) were
+  flashed the same way earlier in the day. The estimate after each flash came
+  from Dreo's reading, not from the controller.
+- On the controller through the Pixel 6 app with T = 60: the first press since
+  boot sent 2 bursts; a press 57.3 s later was accepted with no burst, showed
+  the Home notice, and left as 2 bursts 66.2 s after the previous burst; a
+  press 20 s after that sent 1 burst. The estimate moved once per press. The
+  fan did not move during this check, so it verifies the rule, not reception.
+- APK `app/out-dreo-sync-20261010/outputs/apk/debug/app-debug.apk`, SHA-256
+  `A3A1072BCA1785CD030F99B27795067D8CD175FD81018AA7DD3E099018193AEA`, installed
+  on the Pixel 6 that afternoon; installed and local hashes match. The Pixel 6 had a
+  September build with only a weather location saved; it now carries a copy of
+  the Pixel 8 Pro's settings with Logic paused. The Pixel 8 Pro was not changed.
+
+## Current-setting retry and Dreo comparison — October 10, 2026
+
+- Fixed a Home correction retry trap: a saved correction waiting after a failure
+  or stale connection no longer counts as an active write. Confirming that same
+  value retries it; confirming an identical in-flight correction sends no duplicate.
+  App/test assembly, HomeMotion and BleRecovery checks pass. The regression uses
+  the real service correction path with held, rejected and successful fake ACKs.
+- Installed APK SHA-256 matches
+  `9A13FD6E40DAAFDCACCE856665AD480977572845A5842A667AEB24968982F7BA`.
+  All 21 database/preference files match byte-for-byte across installation.
+  Evidence is under `app/out-current-setting-20261010/`.
+- Dreo 3.7.6 reported Normal mode, speed 2 and both oscillations off while Breeze
+  estimated 3. A controlled correction to 2 followed by direct Speed+/Speed-
+  commands produced Dreo 2 → 3 → 2. Later, after Dreo-app power-on, one actual
+  Breeze Speed+ tap produced two controller transmissions, Dreo 1 → 3 and Breeze
+  1 → 2. The saved idle timeout was 60 seconds. Identical timeout policy therefore
+  produced either one or two real speed steps in these observations.
+- A two-transmission Power attempt left Dreo Off while Breeze estimated 1. This
+  does not distinguish two accepted toggles from missed reception. No unintended
+  oscillation has yet been reproduced; learned-backup and dispatch checks alone
+  do not prove the current optical waveform or physical acceptance of every hit.
+- Dreo Display Auto Off was originally enabled (one-minute timeout). With it
+  temporarily disabled and controller repeats disabled, single Speed+ and Speed-
+  each matched Dreo after more than 80 seconds of idle. Re-enabling display
+  auto-off and waiting more than 87 seconds produced an unmatched single Speed+;
+  a subsequent single Speed+ matched. This supports a display-wake interaction,
+  but does not establish that display configuration alone fixes reception.
+- A subsequent alternating-command probe with both display auto-off and repeats
+  disabled found another mismatch: counter 84 / Speed- changed the estimate
+  from 3 to 2, while Dreo remained 3 across repeated snapshots for about 36 seconds.
+  Earlier, a short-lived mismatch resolved on a later Dreo snapshot, so the
+  repeated probe allows app reporting delay before declaring a mismatch. The
+  probe stopped at the mismatch. No observed snapshot activated Horizontal or
+  Vertical; Normal remained selected. Evidence: `repeat-dreo-result.json` and
+  `repeat-dreo-settled-result.json` in the app evidence directory.
+- A correction based on Dreo's confirmed 3 followed by one Speed- (counter 85)
+  returned both Dreo and the controller estimate to 2. The original Dreo display
+  auto-off setting and 60-second controller timeout were restored afterward;
+  the phone's saved timeout remained 60 throughout. These probes do not resolve
+  the unwanted oscillation or establish reliable unattended IR control.
+
+## One idle-time field for double hits — October 10, 2026
+
+- Setup has one **Idle time (seconds)** field. Zero, the default, disables double
+  hits; 1–3600 repeats the first command after that many idle seconds. Done or
+  leaving Setup saves the value. No checkbox or separate Apply button is needed.
+- Firmware persists the timeout independently of Logic. Changed values cancel
+  queued repeats; failed saves preserve the previous policy. The optional repeat
+  is one full learned burst 300 ms after the first finishes. The estimate advances
+  once for the pair; automatic pacing starts after the final burst completes.
+- `fan_double_hit_test.py` passes idle boundaries at 1/60/3600 seconds, first boot,
+  decoded/raw bursts, 299/300 ms, rollover, persistence, failed saves, same-value
+  saves, cancellation, busy guards, automatic and TARGET pacing. Default-off
+  regressions in `fan_first_send_test.py` pass 432 scenarios; `ir_test.py`,
+  `ir_nvs_migration_test.py` and `ir_symphony_replay_test.py` also pass.
+- With repeats disabled, the modeled overnight regression ends at estimate 1 /
+  modeled fan 1 after four transmissions. The former forced repeat can reproduce
+  estimate 1 / modeled fan 3 if every burst is accepted. Neither result proves
+  physical reception or identifies every overnight event.
+- Android app/test assembly, all 98 JVM tests and lint pass (0 errors, 32 warnings).
+  Emulator `BleRecoveryChecks` verifies capability gating, ACK/write completion,
+  coalescing, reconnects, failures and explicit retries. `HomeMotionChecks`
+  verifies Done/focus/pause saves, validation, retained edits and unchanged Logic,
+  recording and IR activity.
+- An added UI regression reproduced a failed same-value Done retry before the
+  fix. Final HomeMotion and BleRecovery emulator runs pass, including duplicate
+  Done during an in-flight write, failed completion, no routine retry, and explicit
+  retry afterward. Final app/test assembly passes; logs are in
+  `app/out-idle-retry-20261010/`.
+- Firmware 1.2.18 compiled at
+  `firmware/out-double-hit-setting-20261010/BreezeController.ino.bin`: 1,600,928
+  bytes, 168,544 bytes of OTA headroom, SHA-256
+  `582FD0F84C65A82F377CA0962E75A2A1F87791524C001D4C2F2FAB53F69A6ED1`.
+  Its partition layout matches the existing source layout.
+- Windows Wi-Fi OTA accepted 1.2.18. Fresh passive BLE status confirms firmware
+  1.2.18, rollback pending false, timeout capability 1, learned mask 63, no errors,
+  and no IR sends since boot. The recording was already stopped before updating;
+  no recording-stop command was issued. Actual fan response still needs physical
+  observation. Deployment logs are beside the firmware artifact.
+- Final APK `app/out-idle-retry-20261010/outputs/apk/debug/app-debug.apk` is installed
+  on Pixel 8 Pro. Local and installed SHA-256 match
+  `D7F0F8529A1E3F860E93E7155D7EACFB62EDCEE275976F981AD56B1C5FC5F206`.
+  All 21 database/preference files match byte-for-byte before and after the final
+  install. The physical phone shows **Idle time (seconds)**, **0**, and **Double
+  hits off** after reconnecting to 1.2.18. Fresh status reports no errors,
+  recording false, cursor 41,244 and send counter zero. Snapshots, screenshot
+  and install report are under `app/out-double-hit-setting-20261010/`.
+
 ## Firmware 1.2.14 and unresolved Setup behavior — October 9, 2026
 
 - Firmware 1.2.14 compiled and was accepted by the existing Wi-Fi updater.
@@ -445,3 +857,11 @@ The phone locked during further interactive UI checks; additional graph/calibrat
 
 
 Final live verification: after upload, Setup reported Connected and Live readings / recording stopped (sensor firmware capability accepted). Home displayed all three live values. Screenshot: docs/screenshots/sensor-home.png. APK SHA-256: 28CBEE0E134A35D13EB9339240415070506750767125965A56A82A7C9BFDB0B6. Firmware SHA-256: 2B07CC527CED36C6CC5CCECE663D70D88DD28ECF48FFA8EB40E51FD8FBCB4FB2. These verify delivered readings and UI, not independent sensor calibration.
+
+## 2026-10-10: Horizontal preserves Logic; History defaults to the new recording
+
+- Firmware SEND slot 4 preserves the prior automatic-control state and pending speed target. Other manual slots retain their established behavior. Regression failed on the old source and passed after the guard change; 432 first-send scenarios plus Horizontal on/off/target cases passed. The automatic-interval and broader IR/controller suites also passed.
+- Firmware 1.2.16: `firmware/out-horizontal-logic-20261010/BreezeController.ino.bin`, 1,600,752 bytes, SHA-256 `A1C9DFB0E1988B47EA4FD61AC2AA37206EE9E5163F692BD84F233095350EB235`. The partition hash matched the source. Installation waited while the controller was recording; after telemetry independently reported recording stopped, BLE OTA entry and Wi-Fi upload passed. Passive post-reboot validation confirmed 1.2.16, rollbackPending=false, learnedMask=63, synchronized=true, automatic=true, and no telemetry/fan error. No physical Horizontal command was sent by the validation helper.
+- MainActivity follows the newest History session on entry and after Start recording. Delayed first records switch the graph to the new session; ordinary updates retain its view/zoom, while explicit older-night choices remain until History reentry. Saved Activity state retains this selection policy.
+- Android build, 95 JVM tests and lint passed (0 errors, 31 warnings). Isolated emulator HomeMotion checks passed, including actual picker selection, first-session arrival, later recording arrival, same-session graph retention and History reentry; earlier button feedback checks also passed.
+- App installed on Pixel 8 Pro and installed hash matched `app/out-current-recording-20261010/outputs/apk/debug/app-debug.apk`: `AB5312EA5347A49831D6AF7F776441419F46D44F9D55BE817C9BD9F4CC24CF90`. Physical phone History opened the newest Oct 10 12:26:45 AM session; screenshot in that build directory is `pixel-history.png`. No phone records or saved profiles were cleared.

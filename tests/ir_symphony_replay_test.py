@@ -70,24 +70,30 @@ void actualCaptures(bool compact){
   assert(action(fan,FanRemote::SEND,slot)==0);
   assert(rawTransmissions==rawBefore+1&&decodedCalls==decodedBefore&&transmissions==totalBefore+1);
   exactBurst(code);assert(clockMs-started==(duration+999)/1000);
-  assert(fan.lastSend==clockMs&&fan.repeatSlot==FanRemote::NONE);unchangedCodes(preserved);
+  assert(fan.lastSend==clockMs);unchangedCodes(preserved);
   clockMs+=500;
  }
- // Preserve wake timing after the actual full burst finishes; wrap only once.
+ // After idle, send one full learned burst and wrap only once. Check delayed
+ // work relative to actual burst completion, not its start.
  assert(action(fan,FanRemote::SYNC,10,1)==0);clockMs=fan.lastSend+60001;
  int rawBefore=rawTransmissions,decodedBefore=decodedCalls;uint16_t counter=fan.sendCounter;
  assert(action(fan,FanRemote::SEND,1)==0&&fan.estimated==1);
- assert(rawTransmissions==rawBefore+1&&fan.repeatSlot==1);exactBurst(original(1));
+ assert(rawTransmissions==rawBefore+1);exactBurst(original(1));
  uint32_t firstEnd=clockMs;assert(fan.lastSend==firstEnd);
- assert(action(fan,FanRemote::SEND,2)==FanRemote::BUSY&&rawTransmissions==rawBefore+1);
  clockMs=firstEnd+299;fan.tick(35,29,23,clockMs);assert(rawTransmissions==rawBefore+1);
  clockMs=firstEnd+300;fan.tick(35,29,23,clockMs);
- assert(rawTransmissions==rawBefore+2&&decodedCalls==decodedBefore&&fan.sendCounter==counter+2);
- assert(fan.estimated==1&&fan.recordedSetting()==1&&fan.repeatSlot==FanRemote::NONE);
- exactBurst(original(1));assert(fan.lastSend==clockMs&&clockMs>firstEnd+300);
- clockMs=fan.lastSend+60000;assert(action(fan,FanRemote::SEND,2)==0);
- assert(rawTransmissions==rawBefore+3&&fan.repeatSlot==FanRemote::NONE&&fan.estimated==10);
+ assert(rawTransmissions==rawBefore+1&&decodedCalls==decodedBefore&&fan.sendCounter==counter+1);
+ assert(fan.estimated==1&&fan.recordedSetting()==1);
+ exactBurst(original(1));assert(fan.lastSend==firstEnd&&clockMs==firstEnd+300);
+ clockMs=fan.lastSend+60001;assert(action(fan,FanRemote::SEND,2)==0);
+ assert(rawTransmissions==rawBefore+2&&fan.estimated==10);
  exactBurst(original(2));unchangedCodes(preserved);
+ // Another deliberate press is accepted immediately, even after an idle send.
+ assert(action(fan,FanRemote::SEND,1)==0&&fan.estimated==1);
+ assert(rawTransmissions==rawBefore+3&&fan.sendCounter==counter+3);exactBurst(original(1));
+ uint32_t lastEnd=clockMs;clockMs+=300;fan.tick(35,29,23,clockMs);
+ assert(rawTransmissions==rawBefore+3&&decodedCalls==decodedBefore&&fan.lastSend==lastEnd);
+ unchangedCodes(preserved);
 }
 void otherProtocols(){
  for(auto protocol:{NEC,RC5,RC6,UNKNOWN}){
@@ -107,7 +113,7 @@ void otherProtocols(){
 }
 int main(){
  captureFixture();actualCaptures(false);actualCaptures(true);otherProtocols();
- puts("PASS: all six real Symphony captures replay exact 8/9-frame raw timings/carriers from legacy and compact storage; Speed-/Horizontal remain distinct; actual burst-end timestamps, 60s/300ms wake duplicate, H wrap once, immutable learned bytes, other decoded/raw fallback paths unchanged (not physical fan proof)");
+ puts("PASS: all six real Symphony captures replay exact 8/9-frame raw timings/carriers from legacy and compact storage; Speed-/Horizontal remain distinct; actual burst-end timestamps, single burst after >60s idle with no 299/300ms repeat, immediate deliberate presses, H wrap once, immutable learned bytes, other decoded/raw fallback paths unchanged (not physical fan proof)");
 }
 '''
 

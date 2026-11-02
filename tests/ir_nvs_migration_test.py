@@ -77,6 +77,7 @@ inline int nvs_get_stats(const char*,nvs_stats_t* result){
 class Preferences{public:
  bool begin(const char*,bool){return true;}
  bool getBool(const char*,bool fallback){return fallback;}
+ uint32_t getUInt(const char* key,uint32_t fallback){auto it=saved.find(key);if(it==saved.end()||it->second.size()!=4)return fallback;uint32_t value;memcpy(&value,it->second.data(),4);return value;}
  size_t putBool(const char*,bool){nvsWrites++;return failStorage?0:1;}
  size_t putUInt(const char*,uint32_t){nvsWrites++;return failStorage?0:4;}
  size_t getBytesLength(const char* key){auto it=saved.find(key);return it==saved.end()?0:it->second.size();}

@@ -30,7 +30,7 @@ import org.json.JSONObject;
 import org.vosk.Model;
 import org.vosk.Recognizer;
 
-/** Recording-linked offline voice input. Saving results appear only as text. */
+/** Offline fan voice control, with feeling logging only during recording. Feedback is text-only. */
 public final class BedtimeVoiceService extends Service {
     public static final String UPDATE = "com.aaron.breeze.VOICE_UPDATE";
     public static final String ACTION_STOP = "com.aaron.breeze.STOP_BEDTIME_VOICE";
@@ -49,8 +49,13 @@ public final class BedtimeVoiceService extends Service {
     private static final long WAKE_RENEW_MS = 10L * 60 * 1000;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicInteger resetGeneration = new AtomicInteger();
+    private final AtomicInteger captureGeneration = new AtomicInteger();
+    private boolean captureAllowed;
+    private final Object captureSignal = new Object();
+    private final Object recorderLock = new Object();
+    private AudioRecord activeRecorder;
     private volatile boolean stopping, shutdownRequested, commandPending;
-    private volatile boolean inputBlocked, recordingActive, captureReady;
+    private volatile boolean inputBlocked, recognitionAllowed, feelingRecordingActive, captureReady;
     private Thread worker;
     private boolean foreground;
     private AudioManager audio;
@@ -62,9 +67,9 @@ public final class BedtimeVoiceService extends Service {
         lastStopReason = "";
         lastStatus = status;
         audio = getSystemService(AudioManager.class);
-        NotificationChannel channel = new NotificationChannel(CHANNEL, "Voice logging",
+        NotificationChannel channel = new NotificationChannel(CHANNEL, "Voice commands",
                 NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Visible while Breeze listens locally during recording");
+        channel.setDescription("Visible while Breeze listens locally for fan commands and recording feelings");
         channel.setSound(null, null);
         channel.enableVibration(false);
         getSystemService(NotificationManager.class).createNotificationChannel(channel);
@@ -76,7 +81,8 @@ public final class BedtimeVoiceService extends Service {
             return START_NOT_STICKY;
         }
         if (intent == null || RecordingVoiceController.isListeningDisabled(this)
-                || !RecordingVoiceController.shouldRunService()) {
+                || !RecordingVoiceController.shouldRunService()
+                || (worker == null && !RecordingVoiceController.shouldCapture())) {
             shutdownRequested = true;
             stopSelf();
             return START_NOT_STICKY;
@@ -94,12 +100,11 @@ public final class BedtimeVoiceService extends Service {
             PowerManager power = getSystemService(PowerManager.class);
             wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Breeze:BedtimeVoice");
             wakeLock.setReferenceCounted(false);
-            wakeLock.acquire(WAKE_TIMEOUT_MS);
-            main.postDelayed(renewWakeLock, WAKE_RENEW_MS);
+            updateCaptureWakeLock();
             main.postDelayed(startupTimeout, 60000);
             worker = new Thread(this::captureLoop, "Breeze-bedtime-voice");
             worker.start();
-            Log.i(TAG, "START recording-linked offline silent voice logging");
+            Log.i(TAG, "START offline silent voice commands");
             changed();
         } catch (RuntimeException error) {
             Log.e(TAG, "Could not start bedside listening", error);
@@ -113,34 +118,63 @@ public final class BedtimeVoiceService extends Service {
     private final Runnable renewWakeLock = new Runnable() {
         @Override public void run() {
             if (stopping) return;
-            if (!RecordingVoiceController.shouldRunService()) { recordingStateChanged(); return; }
-            wakeLock.acquire(WAKE_TIMEOUT_MS);
-            main.postDelayed(this, WAKE_RENEW_MS);
+            updateCaptureWakeLock();
         }
     };
+    private void updateCaptureWakeLock() {
+        main.removeCallbacks(renewWakeLock);
+        if (wakeLock == null) return;
+        if (isShuttingDown() || !RecordingVoiceController.shouldCapture()) {
+            if (wakeLock.isHeld()) wakeLock.release();
+            return;
+        }
+        wakeLock.acquire(WAKE_TIMEOUT_MS);
+        main.postDelayed(renewWakeLock, WAKE_RENEW_MS);
+    }
+    private void notifyCaptureState() {
+        // Stop capture before releasing the wake lock; the worker owns final AudioRecord release.
+        if(isShuttingDown()||!RecordingVoiceController.shouldCapture())synchronized(recorderLock){
+            if(activeRecorder!=null)try{activeRecorder.stop();}catch(RuntimeException ignored){}
+        }
+        synchronized (captureSignal) { captureSignal.notifyAll(); }
+        updateCaptureWakeLock();
+        BreezeService controller = BreezeService.current;
+        if (controller != null) controller.voiceActivityChanged();
+    }
 
     /** Invoked only on the main thread, from live telemetry or the visible Activity. */
     void recordingStateChanged() {
         if (isShuttingDown()) return;
         if (!RecordingVoiceController.shouldRunService()) {
             shutdownRequested = true;
-            recordingActive = false;
+            recognitionAllowed = false;
+            feelingRecordingActive = false;
             commandPending = true;
             ready = false;
             resetGeneration.incrementAndGet();
+            notifyCaptureState();
             stopSelf();
             return;
         }
         boolean active = RecordingVoiceController.canRecognize();
-        if (recordingActive != active) {
-            recordingActive = active;
+        boolean feelings = RecordingVoiceController.canLogFeeling();
+        boolean capture = RecordingVoiceController.shouldCapture();
+        if(captureAllowed!=capture){captureAllowed=capture;captureGeneration.incrementAndGet();resetGeneration.incrementAndGet();}
+        if (recognitionAllowed != active || feelingRecordingActive != feelings) {
+            recognitionAllowed = active;
+            feelingRecordingActive = feelings;
             resetGeneration.incrementAndGet();
         }
-        if (!active) {
+        if (!capture) {
             ready = false;
-            if (!"Preparing voice • waiting for recording".equals(status))
-                state("Preparing voice • waiting for recording");
+            captureReady = false;
+            main.removeCallbacks(startupTimeout);
+            state(RecordingVoiceController.status());
+        } else if (!active) {
+            ready = false;
+            state(RecordingVoiceController.status());
         }
+        notifyCaptureState();
         listeningReady();
     }
 
@@ -157,35 +191,45 @@ public final class BedtimeVoiceService extends Service {
         try {
             model = new Model(OfflineVoiceModel.prepare(this).getAbsolutePath());
             if (stopping || Thread.currentThread().isInterrupted()) return;
-            recognizer = new Recognizer(model, SAMPLE_RATE, BedtimeVoiceCommand.grammarJson());
-            recognizer.setWords(true);
-            int minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT);
-            if (minimum <= 0) throw new IllegalStateException("Microphone format unavailable");
-            recorder = new AudioRecord.Builder()
-                    .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-                    .setAudioFormat(new AudioFormat.Builder().setSampleRate(SAMPLE_RATE)
-                            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-                    .setBufferSizeInBytes(Math.max(minimum * 2, SAMPLE_RATE)).build();
-            if (recorder.getState() != AudioRecord.STATE_INITIALIZED)
-                throw new IllegalStateException("Microphone could not initialize");
-            if (stopping || Thread.currentThread().isInterrupted()) return;
-            recorder.startRecording();
-            if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING)
-                throw new IllegalStateException("Microphone could not record");
-            main.post(() -> {
-                if (!isShuttingDown()) {
-                    captureReady = true;
-                    main.removeCallbacks(startupTimeout);
-                    listeningReady();
-                }
-            });
             short[] samples = new short[1600];
             int seenGeneration = resetGeneration.get();
             boolean wasGated = true;
+            int recorderGeneration=-1;
             long nextInputCheck = 0;
             while (!stopping && !Thread.currentThread().isInterrupted()) {
+                if(recorder!=null&&recorderGeneration!=captureGeneration.get()){
+                    releaseRecorder(recorder);recorder=null;
+                    if(recognizer!=null){recognizer.close();recognizer=null;}wasGated=true;
+                }
+                if (!RecordingVoiceController.shouldCapture()) {
+                    if (recorder != null) { releaseRecorder(recorder); recorder = null; }
+                    if(recognizer!=null){recognizer.close();recognizer=null;}wasGated = true;
+                    synchronized (captureSignal) {
+                        while (!isShuttingDown() && !RecordingVoiceController.shouldCapture()) captureSignal.wait();
+                    }
+                    if (isShuttingDown()) break;
+                    continue;
+                }
+                if(recognizer==null){recognizer=new Recognizer(model,SAMPLE_RATE,BedtimeVoiceCommand.grammarJson());recognizer.setWords(true);}
+                if (recorder == null) {
+                    recorderGeneration=captureGeneration.get();
+                    recorder = createRecorder();
+                    synchronized(recorderLock){
+                        if(!isShuttingDown()&&RecordingVoiceController.shouldCapture()&&recorderGeneration==captureGeneration.get()){
+                            activeRecorder=recorder;recorder.startRecording();
+                            if(recorder.getRecordingState()!=AudioRecord.RECORDSTATE_RECORDING)
+                                throw new IllegalStateException("Microphone could not record");
+                        }
+                    }
+                    if(!RecordingVoiceController.shouldCapture()||isShuttingDown()||recorderGeneration!=captureGeneration.get()){releaseRecorder(recorder);recorder=null;continue;}
+                    recognizer.reset();seenGeneration = resetGeneration.get();nextInputCheck = 0;
+                    final int startedGeneration=recorderGeneration;
+                    main.post(() -> {
+                        if (!isShuttingDown() && RecordingVoiceController.shouldCapture()&&startedGeneration==captureGeneration.get()) {
+                            captureReady = true;main.removeCallbacks(startupTimeout);listeningReady();
+                        }
+                    });
+                }
                 long now = SystemClock.elapsedRealtime();
                 if (now >= nextInputCheck) {
                     AudioRecordingConfiguration configuration = recorder.getActiveRecordingConfiguration();
@@ -196,35 +240,45 @@ public final class BedtimeVoiceService extends Service {
                     if (blocked != inputBlocked) {
                         inputBlocked = blocked;
                         resetGeneration.incrementAndGet();
-                        main.post(() -> inputAvailabilityChanged(blocked));
+                        final int availabilityGeneration=recorderGeneration;
+                        main.post(() -> {if(availabilityGeneration==captureGeneration.get())inputAvailabilityChanged(blocked);});
                     }
                     nextInputCheck = now + 250;
                 }
                 int count = recorder.read(samples, 0, samples.length, AudioRecord.READ_NON_BLOCKING);
+                if(!RecordingVoiceController.shouldCapture()||isShuttingDown()||recorderGeneration!=captureGeneration.get())continue;
                 if (count < 0) throw new IllegalStateException("Microphone read failed: " + count);
-                boolean gated = !recordingActive || !RecordingVoiceController.canRecognize()
+                boolean gated = !recognitionAllowed || !RecordingVoiceController.canRecognize()
                         || commandPending || inputBlocked;
                 int generation = resetGeneration.get();
                 if (generation != seenGeneration || gated != wasGated) {
                     recognizer.reset();
                     seenGeneration = generation;
+                    count = 0; // A buffer captured across an eligibility change cannot begin a new command.
                 }
                 if (wasGated && !gated) main.post(this::listeningReady);
                 wasGated = gated;
-                // Discard audio until recording is confirmed, or while another command is pending.
+                // Fan commands do not require recording; power/disable and pending-command gates still apply.
                 if (count > 0 && !gated && recognizer.acceptWaveForm(samples, count)) {
                     JSONObject result = new JSONObject(recognizer.getResult());
                     BedtimeVoiceCommand command = BedtimeVoiceCommand.parse(result.optString("text", ""));
                     if (command.kind != BedtimeVoiceCommand.Kind.IGNORE && confidentWake(result)
-                            && !isShuttingDown() && recordingActive && RecordingVoiceController.canRecognize()) {
+                            && generation == resetGeneration.get() && !isShuttingDown()
+                            && recognitionAllowed && RecordingVoiceController.canRecognize()) {
                         // Freeze identity, clock and timezone at acceptance, before asynchronous persistence.
                         long receivedAt = System.currentTimeMillis();
                         String receivedZoneId = ZoneId.systemDefault().getId();
                         RecordingVoiceController.RecordingContext recording = RecordingVoiceController.snapshotForCommand();
+                        boolean logFeeling = command.kind == BedtimeVoiceCommand.Kind.FEELING
+                                && RecordingVoiceController.canLogFeeling();
+                        if(!resetGeneration.compareAndSet(generation,generation+1))continue;
                         commandPending = true;
-                        resetGeneration.incrementAndGet();
-                        main.post(() -> handleCommand(command));
-                        if (command.kind == BedtimeVoiceCommand.Kind.FEELING) {
+                        int acceptedGeneration = generation+1;
+                        main.post(() -> {
+                            if (acceptedGeneration != resetGeneration.get()) { commandPending = false; return; }
+                            handleCommand(command, logFeeling);
+                        });
+                        if (logFeeling) {
                             String token = UUID.randomUUID().toString();
                             RecordingVoiceController.saveFeeling(this, token, receivedAt, receivedZoneId,
                                     recording, command.state, command.intensity, saved -> {
@@ -246,13 +300,29 @@ public final class BedtimeVoiceService extends Service {
                 main.post(() -> fail("The local listener stopped. Open Breeze to resume listening."));
             }
         } finally {
-            if (recorder != null) {
-                try { recorder.stop(); } catch (RuntimeException ignored) { }
-                recorder.release();
-            }
+            if (recorder != null) releaseRecorder(recorder);
             if (recognizer != null) recognizer.close();
             if (model != null) model.close();
             Log.i(TAG, "RELEASE microphone and local recognizer");
+        }
+    }
+    private AudioRecord createRecorder() {
+        if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)
+            throw new SecurityException("Microphone permission is needed to resume listening.");
+        int minimum=AudioRecord.getMinBufferSize(SAMPLE_RATE,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT);
+        if(minimum<=0)throw new IllegalStateException("Microphone format unavailable");
+        AudioRecord recorder=new AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+                .setAudioFormat(new AudioFormat.Builder().setSampleRate(SAMPLE_RATE).setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+                .setBufferSizeInBytes(Math.max(minimum*2,SAMPLE_RATE)).build();
+        if(recorder.getState()!=AudioRecord.STATE_INITIALIZED){recorder.release();throw new IllegalStateException("Microphone could not initialize");}
+        return recorder;
+    }
+    private void releaseRecorder(AudioRecord recorder) {
+        synchronized(recorderLock){
+            if(activeRecorder==recorder)activeRecorder=null;
+            try { recorder.stop(); } catch (RuntimeException ignored) { }
+            recorder.release();
         }
     }
 
@@ -280,7 +350,7 @@ public final class BedtimeVoiceService extends Service {
     }
 
     private void listeningReady() {
-        if (isShuttingDown() || !captureReady || !recordingActive
+        if (isShuttingDown() || !captureReady || !recognitionAllowed
                 || !RecordingVoiceController.canRecognize() || inputBlocked) return;
         if (ready) return;
         ready = true;
@@ -288,13 +358,17 @@ public final class BedtimeVoiceService extends Service {
         Log.i(TAG, "READY offline microphone listening");
     }
 
-    private void handleCommand(BedtimeVoiceCommand command) {
-        if (isShuttingDown() || !recordingActive || !RecordingVoiceController.canRecognize()) {
+    private void handleCommand(BedtimeVoiceCommand command, boolean logFeeling) {
+        if (isShuttingDown() || !recognitionAllowed || !RecordingVoiceController.canRecognize()) {
             commandPending = false;
             return;
         }
         switch (command.kind) {
             case FEELING:
+                if (!logFeeling) {
+                    lastHeard = "Start recording to save warm or cold feelings. Fan voice commands are available.";
+                    break;
+                }
                 String phrase = command.state.toLowerCase(Locale.US) + " "
                         + BedtimeVoiceCommand.intensityWord(command.intensity);
                 lastHeard = "Saving " + phrase + "…";
@@ -307,11 +381,17 @@ public final class BedtimeVoiceService extends Service {
                 Log.i(TAG, "STOP spoken request");
                 RecordingVoiceController.suppress(this);
                 return;
+            case POWER: case LOGIC: case OSCILLATE: case FIX_FAN:
+                BreezeService controller=BreezeService.current;
+                lastHeard=command.kind==BedtimeVoiceCommand.Kind.FIX_FAN?"Checking Dreo to synchronize the fan and app…":"Sending fan command…";
+                if(controller==null)lastHeard="Not sent · connect the controller in Breeze first.";
+                else controller.voiceFanCommand(command.kind,message->{if(current==this&&!isShuttingDown()){lastHeard=message;changed();}});
+                break;
             case READY:
-                lastHeard = "Ready. Say Breeze, warm or cold, and a number from one to ten.";
+                lastHeard = "Ready. Say Breeze power, logic, oscillate, or fix fan. During recording, say warm/cold with a number from one to ten.";
                 break;
             case INVALID:
-                lastHeard = "Not understood. Say Breeze, warm or cold, and a number from one to ten.";
+                lastHeard = "Not understood. Say Breeze power, logic, oscillate, or fix fan. Warm/cold logging requires recording.";
                 break;
             default:
                 break;
@@ -324,8 +404,11 @@ public final class BedtimeVoiceService extends Service {
     private void fail(String message) {
         if (isShuttingDown()) return;
         lastStopReason = message;
+        shutdownRequested = true;
         ready = false;
         commandPending = true;
+        resetGeneration.incrementAndGet();
+        notifyCaptureState();
         state(message);
         RecordingVoiceController.listenerFailed(this, message);
         Log.w(TAG, "STOP " + message);
@@ -339,7 +422,7 @@ public final class BedtimeVoiceService extends Service {
                 new Intent(this, BedtimeVoiceService.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_breeze)
-                .setContentTitle("Breeze voice logging")
+                .setContentTitle("Breeze voice commands")
                 .setContentText(status).setContentIntent(open)
                 .setOngoing(true).setOnlyAlertOnce(true)
                 .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
@@ -348,6 +431,9 @@ public final class BedtimeVoiceService extends Service {
     }
 
     private void state(String message) {
+        // UI reconciliation can repeat the same paused state. Broadcasting it again
+        // feeds a status -> UI refresh -> status loop and floods notifications.
+        if (java.util.Objects.equals(status, message)) return;
         status = message;
         lastStatus = message;
         changed();
@@ -359,10 +445,14 @@ public final class BedtimeVoiceService extends Service {
     private void changed() { sendBroadcast(new Intent(UPDATE).setPackage(getPackageName())); }
 
     @Override protected void dump(java.io.FileDescriptor fd, java.io.PrintWriter out, String[] args) {
-        out.println("ready=" + ready + " recordingActive=" + recordingActive + " status=" + status);
+        out.println("ready=" + ready + " captureReady=" + captureReady + " recognitionAllowed=" + recognitionAllowed
+                + " feelingRecordingActive=" + feelingRecordingActive + " status=" + status);
         out.println("commandPending=" + commandPending + " inputBlocked=" + inputBlocked
                 + " shutdownRequested=" + shutdownRequested
+                + " workerAlive=" + (worker != null && worker.isAlive())
                 + " wakeLock=" + (wakeLock != null && wakeLock.isHeld()));
+        out.println("externallyPowered=" + RecordingVoiceController.isExternallyPowered()
+                + " powerBlocked=" + RecordingVoiceController.isPowerBlocked());
         out.println("lifecycle=" + RecordingVoiceController.describe());
     }
 
@@ -370,6 +460,8 @@ public final class BedtimeVoiceService extends Service {
         stopping = true;
         ready = false;
         commandPending = true;
+        resetGeneration.incrementAndGet();
+        notifyCaptureState();
         main.removeCallbacksAndMessages(null);
         if (worker != null) worker.interrupt();
         if (worker != null) {

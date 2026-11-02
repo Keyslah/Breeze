@@ -2,9 +2,12 @@ package com.aaron.breeze;
 
 import android.Manifest;
 import android.app.KeyguardManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.os.BatteryManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -15,16 +18,28 @@ import java.util.concurrent.Executors;
 /** Main-thread bridge between confirmed controller telemetry and the phone microphone. */
 public final class RecordingVoiceController {
     private static final String LISTENING_DISABLED = "listeningDisabled";
+    private static final String ONLY_LISTEN_WHILE_PLUGGED_IN = "onlyListenWhilePluggedIn";
     private static final String DISABLED_MESSAGE = "Listening is disabled. Sensor recording is unaffected.";
+    private static final String POWER_BLOCKED_MESSAGE = "Listening paused until the phone is plugged into power. Sensor recording is unaffected.";
     private static final RecordingVoiceState state = new RecordingVoiceState();
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static Context app;
+    private static boolean observingPower;
     private static volatile boolean starting;
-    private static volatile String message = "Listening starts automatically with recording.";
+    private static volatile String message = "Enable listening in Breeze to use voice controls.";
     private static final ExecutorService feelingWriter = Executors.newSingleThreadExecutor(
             work -> new Thread(work, "Breeze-feeling-store"));
     public static volatile String lastResult = "";
     private static volatile RecordingContext recordingContext = new RecordingContext(null, -1);
+    private static final BroadcastReceiver powerReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            if (Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction()))
+                externalPowerChanged(intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1));
+            else if (Intent.ACTION_POWER_DISCONNECTED.equals(intent.getAction())) externalPowerChanged(0);
+            else if (Intent.ACTION_POWER_CONNECTED.equals(intent.getAction())) externalPowerChanged(1);
+        }
+    };
 
     static final class RecordingContext {
         final String archive;
@@ -39,9 +54,8 @@ public final class RecordingVoiceController {
     private static final Runnable startDeadline = () -> {
         if (!state.isPending()) return;
         state.onStartTimeout();
-        state.suppress();
-        message = state.isListeningDisabled() ? DISABLED_MESSAGE : "Voice stopped because recording did not start.";
-        stopMicrophone();
+        message = state.isListeningDisabled() ? DISABLED_MESSAGE : state.isSuppressed()
+                ? "Listening paused. Tap Resume listening." : "Recording did not start. Voice controls remain enabled.";
         changed();
     };
 
@@ -59,25 +73,48 @@ public final class RecordingVoiceController {
         remember(context);
         Settings.prefs(context).edit().putBoolean(LISTENING_DISABLED, disabled).apply();
         state.setListeningDisabled(disabled);
-        message = disabled ? DISABLED_MESSAGE : "Listening is enabled. Resume listening during a recording.";
+        message = disabled ? DISABLED_MESSAGE : "Listening is enabled. Open Breeze to start voice controls.";
         if (disabled) stopMicrophone();
         changed();
+    }
+
+    /** Optional battery-saving policy; existing installations keep their current behavior. */
+    public static boolean isOnlyListenWhilePluggedIn(Context context) {
+        remember(context);
+        return state.isOnlyListenWhilePluggedIn();
+    }
+
+    public static void setOnlyListenWhilePluggedIn(Context context, boolean required) {
+        remember(context);
+        Settings.prefs(context).edit().putBoolean(ONLY_LISTEN_WHILE_PLUGGED_IN, required).apply();
+        state.setOnlyListenWhilePluggedIn(required);
+        powerPolicyChanged();
+    }
+
+    public static boolean isPowerBlocked(Context context) { remember(context); return state.isPowerBlocked(); }
+    public static boolean isPowerBlocked() { return state.isPowerBlocked(); }
+    public static boolean isExternallyPowered() { return state.isExternallyPowered(); }
+    public static boolean canStartListening(Context context) {
+        remember(context);
+        return !state.isListeningDisabled() && !state.isPowerBlocked();
     }
 
     /** Called while the Activity is visible, before either kind of recording command. */
     public static void prepareStart(Context visibleActivity) {
         remember(visibleActivity);
-        if (!state.isListeningDisabled()) {
+        if (!state.isListeningDisabled() && !state.isPowerBlocked()) {
             requireUnlocked(visibleActivity);
             if (BedtimeVoiceService.current != null && BedtimeVoiceService.current.isShuttingDown())
                 throw new IllegalStateException("The previous listener is stopping. Start recording again in a moment.");
         }
         state.beginStart();
         recordingContext = new RecordingContext(null, -1);
-        message = state.isListeningDisabled() ? DISABLED_MESSAGE : "Preparing voice • waiting for recording";
+        message = state.isListeningDisabled() ? DISABLED_MESSAGE : state.isPowerBlocked()
+                ? POWER_BLOCKED_MESSAGE : "Preparing voice controls…";
         main.removeCallbacks(startDeadline);
         main.postDelayed(startDeadline, 30000);
         if (state.isListeningDisabled()) { stopMicrophone(); return; }
+        if (state.isPowerBlocked()) { powerPolicyChanged(); return; }
         try { startMicrophone(visibleActivity); }
         catch (RuntimeException error) {
             state.onStartFailed();
@@ -92,9 +129,13 @@ public final class RecordingVoiceController {
         remember(visibleActivity);
         if (state.isListeningDisabled()) { stopMicrophone(); return; }
         BreezeService controller = BreezeService.current;
-        if (controller == null || !controller.fresh()) return;
-        onTelemetry(visibleActivity, controller.latest.active());
+        if (controller != null && controller.fresh()) onTelemetry(visibleActivity, controller.latest.active());
+        if (state.isPowerBlocked()) return;
         if (visibleActivity.getSystemService(KeyguardManager.class).isKeyguardLocked()) return;
+        if (visibleActivity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            message = "Allow microphone access to enable listening.";
+            return;
+        }
         if (state.shouldStart(true, starting || BedtimeVoiceService.current != null)) {
             try { startMicrophone(visibleActivity); }
             catch (RuntimeException ignored) { /* Failure is already exposed as voice status. */ }
@@ -104,7 +145,7 @@ public final class RecordingVoiceController {
     public static void suppress(Context context) {
         remember(context);
         state.suppress();
-        message = state.isListeningDisabled() ? DISABLED_MESSAGE : "Listening paused for this recording.";
+        message = state.isListeningDisabled() ? DISABLED_MESSAGE : "Listening paused. Tap Resume listening.";
         stopMicrophone();
         changed();
     }
@@ -113,19 +154,19 @@ public final class RecordingVoiceController {
         remember(visibleActivity);
         if (state.isListeningDisabled()) { stopMicrophone(); return; }
         requireUnlocked(visibleActivity);
-        BreezeService controller = BreezeService.current;
-        if (controller == null || !controller.fresh() || !controller.latest.active())
-            throw new IllegalStateException("Wait for confirmation that the controller is recording.");
-        state.onTelemetry(true);
         state.resume();
-        message = "Preparing voice for the current recording…";
+        if (state.isPowerBlocked()) { powerPolicyChanged(); return; }
+        message = "Preparing voice controls…";
         startMicrophone(visibleActivity);
     }
 
     public static boolean isSuppressed() { return state.isSuppressed(); }
     public static boolean isStarting() { return state.isPending(); }
-    public static String status() { return state.isListeningDisabled() ? DISABLED_MESSAGE : message; }
+    public static String status() { return state.isListeningDisabled() ? DISABLED_MESSAGE
+            : state.isPowerBlocked() && !state.isSuppressed() ? POWER_BLOCKED_MESSAGE : message; }
     static boolean canRecognize() { return state.canRecognize(); }
+    static boolean canLogFeeling() { return state.canLogFeeling(); }
+    static boolean shouldCapture() { return state.shouldCapture(); }
     static boolean shouldRunService() {
         return app != null && !isListeningDisabled(app) && state.shouldRunService();
     }
@@ -184,12 +225,11 @@ public final class RecordingVoiceController {
         if (active) main.removeCallbacks(startDeadline);
         if (!state.shouldRunService()) {
             if (state.isListeningDisabled()) message = DISABLED_MESSAGE;
-            else if (!active && !state.isPending()) message = "Listening starts automatically with recording.";
             stopMicrophone();
         } else if (BedtimeVoiceService.current != null) {
             BedtimeVoiceService.current.recordingStateChanged();
-        } else if (active && !starting) {
-            message = "Recording • open Breeze to enable listening.";
+        } else if (!starting) {
+            message = state.isPowerBlocked() ? POWER_BLOCKED_MESSAGE : "Open Breeze to start voice controls.";
         }
         if (wasActive != active || wasPending != state.isPending()) changed();
     }
@@ -199,11 +239,9 @@ public final class RecordingVoiceController {
         if (!state.isPending()) return;
         state.onStartFailed();
         main.removeCallbacks(startDeadline);
-        if (!state.isActive()) {
-            message = state.isListeningDisabled() ? DISABLED_MESSAGE : "Listening starts when recording starts successfully.";
-            stopMicrophone();
-            changed();
-        }
+        message = state.isListeningDisabled() ? DISABLED_MESSAGE : state.isSuppressed()
+                ? "Listening paused. Tap Resume listening." : "Recording did not start. Voice controls remain enabled.";
+        changed();
     }
 
     static void listenerFailed(Context context, String reason) {
@@ -220,6 +258,7 @@ public final class RecordingVoiceController {
     public static String describe() {
         return "active=" + state.isActive() + " pending=" + state.isPending()
                 + " disabled=" + state.isListeningDisabled() + " suppressed=" + state.isSuppressed() + " starting=" + starting
+                + " pluggedOnly=" + state.isOnlyListenWhilePluggedIn() + " powered=" + state.isExternallyPowered()
                 + " archiveBound=" + (recordingContext.archive != null)
                 + " listener=" + (BedtimeVoiceService.current != null) + " status=" + message;
     }
@@ -227,6 +266,7 @@ public final class RecordingVoiceController {
     private static void startMicrophone(Context context) {
         remember(context);
         if (state.isListeningDisabled()) { stopMicrophone(); return; }
+        if (state.isPowerBlocked()) { powerPolicyChanged(); return; }
         if (BedtimeVoiceService.current != null) {
             // Its destruction broadcasts an update; only a still-visible Activity may retry.
             if (!BedtimeVoiceService.current.isShuttingDown())
@@ -236,7 +276,7 @@ public final class RecordingVoiceController {
         if (starting || !state.shouldRunService()) return;
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             state.suppress();
-            message = "Allow microphone access to enable listening during recording.";
+            message = "Allow microphone access to enable listening.";
             changed();
             throw new SecurityException(message);
         }
@@ -263,10 +303,41 @@ public final class RecordingVoiceController {
     private static void remember(Context context) {
         app = context.getApplicationContext();
         isListeningDisabled(app);
+        state.setOnlyListenWhilePluggedIn(Settings.prefs(app).getBoolean(ONLY_LISTEN_WHILE_PLUGGED_IN, false));
+        if (!observingPower) {
+            // One process-lifetime receiver; no wake lock, timer, or microphone service cold start.
+            observingPower = true;
+            IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            filter.addAction(Intent.ACTION_POWER_CONNECTED);
+            filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
+            Intent battery = app.registerReceiver(powerReceiver, filter, null, main, Context.RECEIVER_NOT_EXPORTED);
+            state.setExternalPowerSource(battery == null ? -1 : battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1));
+        }
+    }
+
+    private static void externalPowerChanged(int plugged) {
+        boolean wasPowered = state.isExternallyPowered();
+        // Charging status is deliberately ignored: a full battery can still be plugged in.
+        state.setExternalPowerSource(plugged);
+        if (wasPowered != state.isExternallyPowered()) powerPolicyChanged();
+    }
+
+    private static void powerPolicyChanged() {
+        if (state.isListeningDisabled()) {
+            message = DISABLED_MESSAGE;
+            stopMicrophone();
+        } else {
+            if (state.isPowerBlocked() && !state.isSuppressed()) message = POWER_BLOCKED_MESSAGE;
+            else if (state.isSuppressed()) message = "Listening paused. Tap Resume listening.";
+            else if (BedtimeVoiceService.current == null) message = "Open Breeze to start voice controls.";
+            // A previously eligible foreground service may resume capture; broadcasts never create one.
+            if (BedtimeVoiceService.current != null) BedtimeVoiceService.current.recordingStateChanged();
+        }
+        changed();
     }
     private static void requireUnlocked(Context context) {
         if (context.getSystemService(KeyguardManager.class).isKeyguardLocked())
-            throw new IllegalStateException("Open Breeze while unlocked to enable listening for this recording.");
+            throw new IllegalStateException("Open Breeze while unlocked to enable voice controls.");
     }
     private static void changed() {
         if (app != null) app.sendBroadcast(new Intent(BedtimeVoiceService.UPDATE).setPackage(app.getPackageName()));

@@ -10,29 +10,34 @@ import android.database.DatabaseErrorHandler;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.Build;
 import android.os.SystemClock;
+import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.EditText;
+import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.io.File;
 import java.io.StringReader;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.function.IntFunction;
 import org.json.JSONObject;
 
 /** Emulator-only actual Activity checks with isolated files/preferences and fake transport. */
 public final class NamedLogicProfileChecks {
     private NamedLogicProfileChecks(){}
-    private static final String LIBRARY="logicSavedProfilesV1";
+    private static final String LIBRARY="logicSavedProfilesV2",EARLIER="logicProfileV1",EARLIER_LIBRARY="logicSavedProfilesV1";
     private static volatile Scope activeScope;
     private interface MainAction {void run() throws Exception;}
     private static void check(boolean value,String message){if(!value)throw new AssertionError(message);}
@@ -68,39 +73,58 @@ public final class NamedLogicProfileChecks {
         catch(ReflectiveOperationException failure){throw new AssertionError("Could not isolate Activity context",failure);}
     }
     private static Properties fields(LogicProfile profile){try{Properties result=new Properties();result.load(new StringReader(profile.serialize()));return result;}catch(Exception failure){throw new AssertionError(failure);}}
-    private static void same(LogicProfile expected,LogicProfile actual,String message){check(fields(expected).equals(fields(actual)),message);}
+    private static void same(LogicProfile expected,LogicProfile actual,String message){check(actual!=null&&fields(expected).equals(fields(actual)),message);}
     private static Map<String,LogicProfile> profiles(Context context){Map<String,LogicProfile> result=new HashMap<>();for(LogicProfile profile:Settings.savedLogicProfiles(context)){check(result.put(profile.name,profile)==null,"Unique saved names");}return result;}
     private static LogicProfile profile(String name,int variant){
-        LogicProfile p=new LogicProfile();p.id="shared-identity";p.name=name;p.roomBoundaryF=75.25+variant;p.coolRoomThresholdF=69.5+variant;p.probeMask=variant==0?3:7;p.averageSeconds=47+variant;p.riseSeconds=17+variant;p.fallSeconds=13+variant;p.maxSpeed=8-variant;
-        for(int i=0;i<2;i++){LogicProfile.Rule r=i==0?p.warm:p.cool;r.bodyThresholdF=97.35-i+variant;r.stepF=0.35+i*0.2+variant*0.1;r.minimumSpeed=4-i-variant;r.offBelow=i==1;r.boost.enabled=(i==variant);r.boost.amount=3+i;r.boost.triggerRiseF=0.65+i*0.2;r.boost.windowSeconds=43+i*16+variant;r.boost.riseSeconds=4+i*4+variant;r.boost.holdSeconds=149+i*122+variant;r.boost.returnSeconds=7+i*4+variant;r.boost.curve=(i+variant)%2;}
+        LogicProfile p=new LogicProfile();p.id="shared-identity";p.name=name;p.offRoomF=66.25+variant;p.offBodyF=97.25+variant;p.fullRoomF=75.5+variant;p.fullBodyF=96.75-variant;p.bodyWeight=0.75+variant*0.5;p.steadiness=0.25+variant*0.25;p.averageSeconds=47+variant;p.riseSeconds=17+variant;p.fallSeconds=13+variant;
+        LogicProfile.Boost b=p.boost;b.enabled=variant==1;b.amount=3+variant;b.triggerRiseF=0.75+variant*0.5;b.windowSeconds=43+variant;b.riseSeconds=4+variant;b.holdSeconds=149+variant;b.returnSeconds=7+variant;b.curve=variant%2;
+        LogicProfile.TimeWindow w=p.timeWindow;w.enabled=variant==1;w.startMinute=variant==0?270:1320;w.endMinute=variant==0?480:300;w.adjustment=variant==0?-1:2;
         p.validate();return p;
     }
     private static String mismatchedEntry(LogicProfile profile){try{return new JSONObject().put("Wrong entry name",profile.serialize()).toString();}catch(Exception failure){throw new AssertionError(failure);}}
     private static void storage(Context context){
-        SharedPreferences prefs=Settings.prefs(context);LogicProfile legacy=profile("Legacy active",0);check(prefs.edit().putString("logicProfileV1",legacy.serialize()).commit(),"Prepare legacy active fixture");
-        Map<String,LogicProfile> library=profiles(context);check(library.size()==1,"First access seeds exactly the existing active profile");same(legacy,library.get(legacy.name),"Legacy seed retains every field");
-        LogicProfile typed=profile("Partially typed name",1);Settings.saveLogicProfile(context,typed);check(profiles(context).size()==1&&!profiles(context).containsKey(typed.name),"Autosave does not add typed names to saved profiles");same(legacy,profiles(context).get(legacy.name),"Autosave preserves legacy snapshot");
-        LogicProfile a=profile("Profile A",0),b=profile("Profile B",1);Settings.saveNamedLogicProfile(context,a);Settings.saveNamedLogicProfile(context,b);library=profiles(context);check(library.size()==3,"Explicit A and B survive despite the same profile identity");same(a,library.get(a.name),"Saving B preserves A");same(b,library.get(b.name),"Saving B stores every field");
-        b.warm.boost.holdSeconds++;Settings.saveLogicProfile(context,b);same(profile("Profile B",1),profiles(context).get(b.name),"Autosaving an existing name does not overwrite its saved snapshot");
-        a.cool.boost.returnSeconds=43;Settings.saveNamedLogicProfile(context,a);check(profiles(context).size()==3,"Same-name explicit save replaces one snapshot");same(a,profiles(context).get(a.name),"Same-name explicit save updates the whole snapshot");
-        LogicProfile detached=profiles(context).get(a.name);detached.name="Detached";detached.cool.boost.returnSeconds=99;same(a,profiles(context).get(a.name),"Returned library values cannot mutate saved snapshots");
-        same(a,Settings.loadLogicProfile(context,a.name),"Load returns all fields including independent thresholds, boosts and probes");same(a,Settings.logicProfile(context),"Offline load persists active profile");same(a,Settings.logicProfile(new IsolatedContext(((IsolatedContext)context).scope.base,((IsolatedContext)context).scope)),"Active loaded profile survives a fresh context");
-        String libraryBefore=prefs.getString(LIBRARY,null);try{Settings.loadLogicProfile(context,"Missing profile");throw new AssertionError("Missing profile was accepted");}catch(IllegalArgumentException expected){}same(a,Settings.logicProfile(context),"Missing selection preserves active profile");check(libraryBefore.equals(prefs.getString(LIBRARY,null)),"Load never rewrites saved snapshots");
-        LogicProfile spaced=profile("  Trimmed profile  ",1);Settings.saveNamedLogicProfile(context,spaced);check(profiles(context).containsKey("Trimmed profile")&&!profiles(context).containsKey(spaced.name),"Explicit save normalizes surrounding name spaces");same(spaced,Settings.loadLogicProfile(context," Trimmed profile "),"Load accepts surrounding name spaces");try{Settings.loadLogicProfile(context,"trimmed profile");throw new AssertionError("Case-insensitive lookup unexpectedly accepted");}catch(IllegalArgumentException expected){}
+        SharedPreferences prefs=Settings.prefs(context);String earlier="version=1\nname=Legacy active\nroomBoundaryF=73.0\ncoolRoomThresholdF=72.0\naverageSeconds=41\nriseSeconds=14\nfallSeconds=8\n",earlierLibrary="{\"Legacy active\":\"kept as stored\"}";
+        check(prefs.edit().putString(EARLIER,earlier).putString(EARLIER_LIBRARY,earlierLibrary).commit(),"Prepare earlier threshold fixtures");
+        LogicProfile first=Settings.logicProfile(context);check(first.name.equals("Default")&&first.offRoomF==68&&first.offBodyF==98&&first.fullRoomF==74&&first.fullBodyF==97&&first.bodyWeight==1,"First access starts on the default range");check(first.averageSeconds==41&&first.riseSeconds==14&&first.fallSeconds==8,"Only the earlier timing carries over");
+        check(!first.timeWindow.enabled&&first.timeWindow.startMinute==270&&first.timeWindow.endMinute==480&&first.timeWindow.adjustment==-1,"Earlier profiles receive a disabled morning time window");
+        check(prefs.getBoolean("homeLogicProfileDeferred",false),"The new range is queued for the controller");check(earlier.equals(prefs.getString(EARLIER,null))&&earlierLibrary.equals(prefs.getString(EARLIER_LIBRARY,null)),"Earlier threshold profiles stay exactly as stored");
+        check(profiles(context).isEmpty()&&!Settings.logicDraftPending(context),"No named range or unsent edit exists yet");
+        LogicProfile a=profile("Profile A",0),b=profile("Profile B",1);Settings.saveNamedLogicProfile(context,a);Settings.saveNamedLogicProfile(context,b);Map<String,LogicProfile> library=profiles(context);check(library.size()==2,"Explicit A and B survive despite the same profile identity");same(a,library.get(a.name),"Saving B preserves A");same(b,library.get(b.name),"Saving B stores every field");
+        same(first,Settings.logicProfile(context),"Saving named copies never changes the applied range");check(!Settings.logicDraftPending(context),"Saving named copies never creates unsent edits");
+        a.boost.returnSeconds=43;Settings.saveNamedLogicProfile(context,a);check(profiles(context).size()==2,"Same-name save replaces one snapshot");same(a,profiles(context).get(a.name),"Same-name save updates the whole snapshot");
+        LogicProfile detached=profiles(context).get(a.name);detached.name="Detached";detached.boost.returnSeconds=99;same(a,profiles(context).get(a.name),"Returned library values cannot mutate saved snapshots");
+        same(a,Settings.loadLogicProfile(context,a.name),"Load returns every field");same(first,Settings.logicProfile(context),"Reading a named copy applies nothing");check(Settings.hasSavedLogicProfile(context," Profile A ")&&!Settings.hasSavedLogicProfile(context,"profile a"),"Name lookup trims but is case-sensitive");
+        Settings.saveLogicDraft(context,a);check(Settings.logicDraftPending(context),"Loaded settings wait as unsent edits");same(a,Settings.logicDraft(context),"The form shows the loaded settings");same(first,Settings.logicProfile(context),"Unsent edits leave the applied range alone");same(a,Settings.logicDraft(new IsolatedContext(((IsolatedContext)context).scope.base,((IsolatedContext)context).scope)),"Unsent edits survive a fresh context");
+        Settings.saveLogicProfile(context,a);check(!Settings.logicDraftPending(context),"Applying clears the unsent edits");same(a,Settings.logicProfile(context),"Applying stores the range");
+        LogicProfile renamed=a.copy();renamed.name="Only a new name";Settings.saveLogicDraft(context,renamed);check(!Settings.logicDraftPending(context)&&Settings.logicProfile(context).name.equals("Only a new name"),"A rename alone is not an unsent edit");Settings.saveLogicProfile(context,a);
+        String libraryBefore=prefs.getString(LIBRARY,null);try{Settings.loadLogicProfile(context,"Missing profile");throw new AssertionError("Missing profile was accepted");}catch(IllegalArgumentException expected){}same(a,Settings.logicProfile(context),"Missing selection preserves the applied range");check(libraryBefore.equals(prefs.getString(LIBRARY,null)),"Load never rewrites saved snapshots");
+        LogicProfile spaced=profile("  Trimmed profile  ",1);Settings.saveNamedLogicProfile(context,spaced);check(profiles(context).containsKey("Trimmed profile")&&!profiles(context).containsKey(spaced.name),"Save normalizes surrounding name spaces");same(spaced,Settings.loadLogicProfile(context," Trimmed profile "),"Load accepts surrounding name spaces");try{Settings.loadLogicProfile(context,"trimmed profile");throw new AssertionError("Case-insensitive lookup unexpectedly accepted");}catch(IllegalArgumentException expected){}
         String validLibrary=prefs.getString(LIBRARY,null);LogicProfile beforeCorruption=Settings.logicProfile(context);
         for(String corrupt:new String[]{"[]","{} trailing","{\"Bad\":4}",mismatchedEntry(a)}){
             check(prefs.edit().putString(LIBRARY,corrupt).commit(),"Prepare corrupt isolated library");
             try{Settings.savedLogicProfiles(context);throw new AssertionError("Corrupt library accepted by list");}catch(IllegalArgumentException expected){}
             try{Settings.loadLogicProfile(context,a.name);throw new AssertionError("Corrupt library accepted by load");}catch(IllegalArgumentException expected){}
-            try{Settings.saveNamedLogicProfile(context,a);throw new AssertionError("Corrupt library overwritten by explicit save");}catch(IllegalArgumentException expected){}
-            same(beforeCorruption,Settings.logicProfile(context),"Library failures preserve active profile");check(corrupt.equals(prefs.getString(LIBRARY,null)),"Library failures preserve the stored collection exactly");
+            try{Settings.saveNamedLogicProfile(context,a);throw new AssertionError("Corrupt library overwritten by save");}catch(IllegalArgumentException expected){}
+            same(beforeCorruption,Settings.logicProfile(context),"Library failures preserve the applied range");check(corrupt.equals(prefs.getString(LIBRARY,null)),"Library failures preserve the stored collection exactly");
         }
         check(prefs.edit().putString(LIBRARY,validLibrary).commit(),"Restore valid isolated collection");
-        check(prefs.edit().remove(LIBRARY).putString("logicProfileV1",legacy.serialize()).commit(),"Prepare pre-library autosave fixture");Settings.saveLogicProfile(context,typed);library=profiles(context);check(library.size()==1&&library.containsKey(legacy.name),"First autosave seeds the prior active profile, not the draft");same(legacy,library.get(legacy.name),"First autosave retains the old settings exactly");
+        check(earlier.equals(prefs.getString(EARLIER,null))&&earlierLibrary.equals(prefs.getString(EARLIER_LIBRARY,null)),"No range operation rewrote the earlier threshold profiles");
     }
     private static List<TextView> labels(View view,String label){List<TextView> result=new ArrayList<>();collectLabels(view,label,result);return result;}
     private static void collectLabels(View view,String label,List<TextView> result){if(view instanceof TextView&&label.contentEquals(((TextView)view).getText()))result.add((TextView)view);if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)collectLabels(group.getChildAt(i),label,result);}}
+    private static View tagged(View view,String tag){if(tag.equals(view.getTag()))return view;if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++){View found=tagged(group.getChildAt(i),tag);if(found!=null)return found;}}return null;}
+    private static String shown(Activity activity,String tag){return ((TextView)tagged(root(activity),tag)).getText().toString();}
+    private static void timeWindowShown(Activity activity,LogicProfile expected){
+        View toggle=tagged(root(activity),"logicTimeWindowEnabled"),start=tagged(root(activity),"logicTimeWindowStart"),end=tagged(root(activity),"logicTimeWindowEnd"),adjustment=tagged(root(activity),"logicTimeWindowAdjustment");
+        check(labels(root(activity),"Time windows").size()==1&&toggle instanceof CheckBox&&start instanceof Button&&end instanceof Button&&adjustment instanceof EditText,"Time windows have one section heading and accessible editable controls");
+        check(((CheckBox)toggle).isChecked()==expected.timeWindow.enabled,"Time window enabled state is restored");
+        java.text.DateFormat time=android.text.format.DateFormat.getTimeFormat(activity);time.setTimeZone(TimeZone.getTimeZone("UTC"));
+        check(((Button)start).getText().toString().equals("Start · "+time.format(new Date(expected.timeWindow.startMinute*60_000L)))&&((Button)end).getText().toString().equals("End · "+time.format(new Date(expected.timeWindow.endMinute*60_000L))),"Start and end restore in the phone's time format");
+        check(((EditText)adjustment).getText().toString().equals(Integer.toString(expected.timeWindow.adjustment))&&(((EditText)adjustment).getInputType()&InputType.TYPE_NUMBER_FLAG_SIGNED)!=0,"Time window restores the adjustment and accepts signed whole numbers");
+        check(start.getContentDescription()!=null&&end.getContentDescription()!=null&&adjustment.getContentDescription()!=null,"Time window fields have accessibility labels");
+    }
     private static EditText input(View view,String label){if(view instanceof EditText&&label.contentEquals(view.getContentDescription()==null?"":view.getContentDescription()))return (EditText)view;if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++){EditText found=input(group.getChildAt(i),label);if(found!=null)return found;}}return null;}
+    private static String value(Activity activity,String label){return input(root(activity),label).getText().toString();}
     private static View root(Activity activity){return activity.getWindow().getDecorView();}
     private static void click(Activity activity,String label,int index){List<TextView> found=labels(root(activity),label);check(found.size()>index,"Missing control: "+label);check(found.get(index).performClick(),"Control did not handle click: "+label);}
     private static boolean matches(CharSequence value,String label){return value!=null&&label.equalsIgnoreCase(value.toString().trim());}
@@ -144,29 +168,73 @@ public final class NamedLogicProfileChecks {
         if(!emulator())return "SKIPPED: named profile checks run only on an emulator; physical phone untouched.\n";
         Context real=test.getTargetContext();Map<String,?> originalPreferences=new HashMap<>(Settings.prefs(real).getAll());Scope scope=new Scope(real);Context isolated=new IsolatedContext(real,scope);Activity activity=null;FakeController fake=new FakeController(isolated);boolean[] installed={false};
         try{
-            storage(isolated);LogicProfile a=profile("UI A",0);Settings.saveNamedLogicProfile(isolated,a);Settings.saveNamedLogicProfile(isolated,profile("UI B",1));Settings.loadLogicProfile(isolated,a.name);
+            storage(isolated);LogicProfile a=profile("UI A",0),b=profile("UI B",1);Settings.saveNamedLogicProfile(isolated,a);Settings.saveNamedLogicProfile(isolated,b);Settings.saveLogicProfile(isolated,a);
             onMain(test,()->{check(BreezeService.current==null&&BedtimeVoiceService.current==null,"Existing services are left untouched");BreezeService.current=fake;installed[0]=true;activeScope=scope;});
             activity=test.startActivitySync(new Intent(real,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));final Activity screen=activity;test.waitForIdleSync();
             onMain(test,()->click(screen,"Setup",0));test.waitForIdleSync();
-            LogicProfile[] savedA={null},savedB={null};
+            int[] before={0};
             onMain(test,()->{
-                check(Settings.prefs(screen)==Settings.prefs(isolated),"Activity uses isolated preferences");List<TextView> saves=labels(root(screen),"Save profile"),loads=labels(root(screen),"Load profile");check(saves.size()==2&&loads.size()==2,"Top and bottom Save/Load pairs exist");
-                for(int i=0;i<2;i++){check(saves.get(i).getParent()==loads.get(i).getParent(),"Save and Load share their row");LinearLayout row=(LinearLayout)saves.get(i).getParent();check(row.getOrientation()==LinearLayout.HORIZONTAL&&row.indexOfChild(saves.get(i))<row.indexOfChild(loads.get(i)),"Load follows Save horizontally");}
-                check(fake.applied.isEmpty(),"Constructing Logic does not upload");input(root(screen),"Profile name").setText("UI A");input(root(screen),"Room temperature at or above (°F)").setText("77.25");click(screen,"Save profile",0);savedA[0]=Settings.logicProfile(isolated);check(fake.applied.size()==1,"Top Save applies once");
-                input(root(screen),"Profile name").setText("UI B");input(root(screen),"Room temperature below (°F)").setText("68.5");click(screen,"Save profile",1);savedB[0]=Settings.logicProfile(isolated);check(fake.applied.size()==2,"Bottom Save applies once");same(savedA[0],profiles(isolated).get("UI A"),"Saving UI B preserves UI A");
-                input(root(screen),"Profile name").setText("Unsaved typed name");
+                check(Settings.prefs(screen)==Settings.prefs(isolated),"Activity uses isolated preferences");
+                TextView chooser=(TextView)tagged(root(screen),"logicProfile");List<TextView> saveAs=labels(root(screen),"Save as…");check(chooser!=null&&saveAs.size()==1&&labels(root(screen),"Apply to fan").size()==1,"One profile chooser, one Save as and one Apply exist");
+                LinearLayout row=(LinearLayout)chooser.getParent();check(saveAs.get(0).getParent()==row&&row.getOrientation()==LinearLayout.HORIZONTAL&&row.indexOfChild(chooser)<row.indexOfChild(saveAs.get(0)),"Save as follows the profile chooser on one row");
+                check(chooser.getText().toString().equals("Profile: UI A ▾")&&labels(root(screen),"Save profile").isEmpty()&&labels(root(screen),"Load profile").isEmpty(),"The chooser names the active profile; the old Save/Load pair is gone");
+                check(fake.applied.isEmpty()&&value(screen,"Fan off at · room (°F)").equals("66.25")&&value(screen,"Body weight (levels per °F)").equals("0.75"),"Constructing Logic shows the applied range and does not upload");
+                timeWindowShown(screen,a);((EditText)tagged(root(screen),"logicTimeWindowAdjustment")).setText("-2");click(screen,"Home",0);click(screen,"Setup",0);
+                LogicProfile timeDraft=a.copy();timeDraft.timeWindow.adjustment=-2;timeWindowShown(screen,timeDraft);same(timeDraft,Settings.logicDraft(isolated),"Negative time-window edit survives leaving and reopening Setup");same(a,Settings.logicProfile(isolated),"Time-window draft does not change the applied profile");check(Settings.logicDraftPending(isolated)&&fake.applied.isEmpty(),"Time-window edit waits for Apply and sends nothing");
+                input(root(screen),"Full speed at · room (°F)").setText("79.5");click(screen,"Apply to fan",0);
+                check(fake.applied.size()==1&&fake.applied.get(0).fullRoomF==79.5&&Settings.logicProfile(isolated).fullRoomF==79.5&&!Settings.logicDraftPending(isolated),"Apply uploads the edited range once");same(a,profiles(isolated).get("UI A"),"Apply never rewrites the named copy");
+                check(fake.applied.get(0).timeWindow.adjustment==-2&&!fake.applied.get(0).timeWindow.enabled&&fake.applied.get(0).timeWindow.startMinute==a.timeWindow.startMinute&&fake.applied.get(0).timeWindow.endMinute==a.timeWindow.endMinute,"Apply includes the signed adjustment and preserves disabled times");
+                click(screen,"Save as…",0);
             });
+            dialogClick(test,"Save");
+            onMain(test,()->{check(profiles(isolated).get("UI A").fullRoomF==79.5&&profiles(isolated).size()>=2,"Save as with the current name updates that copy");check(fake.applied.size()==1,"Saving a named copy never uploads");same(b,profiles(isolated).get("UI B"),"Saving UI A preserves UI B");
+                check(profiles(isolated).get("UI A").timeWindow.adjustment==-2&&!profiles(isolated).get("UI A").timeWindow.enabled,"Save as keeps the edited time-window fields");
+                input(root(screen),"Body weight (levels per °F)").setText("2");tagged(root(screen),"logicProfile").performClick();});
+            dialogClick(test,"UI B");dialogClick(test,"Cancel");
+            onMain(test,()->{check(Settings.logicDraftPending(isolated)&&Settings.logicDraft(isolated).bodyWeight==2&&value(screen,"Body weight (levels per °F)").equals("2"),"Declining the replacement keeps the unsent edit");check(fake.applied.size()==1,"Cancel never applies another profile");tagged(root(screen),"logicProfile").performClick();});
+            dialogClick(test,"UI B");dialogClick(test,"Load");
+            onMain(test,()->{same(b,Settings.logicDraft(isolated),"Chooser loads B in full into the form");check(Settings.logicDraftPending(isolated)&&Settings.logicProfile(isolated).fullRoomF==79.5&&fake.applied.size()==1,"Loading waits for Apply and uploads nothing");
+                timeWindowShown(screen,b);
+                check(value(screen,"Fan off at · room (°F)").equals("67.25")&&((TextView)tagged(root(screen),"logicProfile")).getText().toString().equals("Profile: UI B ▾")&&shown(screen,"logicApply").equals("Changes not yet applied"),"Loaded values and name replace the editor");before[0]=fake.applied.size();});
             SystemClock.sleep(750);test.waitForIdleSync();
-            int[] before={0};LogicProfile[] cancelBefore={null};String[] libraryBefore={null};
-            onMain(test,()->{check(Settings.logicProfile(isolated).name.equals("Unsaved typed name"),"Typing autosaves active state");check(!profiles(isolated).containsKey("Unsaved typed name"),"Typed name does not pollute saved library");same(savedB[0],profiles(isolated).get("UI B"),"Autosave preserves B snapshot");before[0]=fake.applied.size();cancelBefore[0]=Settings.logicProfile(isolated);libraryBefore[0]=Settings.prefs(isolated).getString(LIBRARY,null);click(screen,"Load profile",0);});
-            dialogClick(test,"Cancel");onMain(test,()->{check(fake.applied.size()==before[0],"Cancel never applies another profile");same(cancelBefore[0],Settings.logicProfile(isolated),"Cancel preserves active profile");});
-            // Opening flushes the draft. Selection must cancel its old closure/debounce
-            // before rebuilding, so the saved A cannot be replaced by the pending draft.
-            onMain(test,()->{input(root(screen),"Profile name").setText("Pending debounce draft");input(root(screen),"Room temperature at or above (°F)").setText("78.25");click(screen,"Load profile",0);before[0]=fake.applied.size();});
-            dialogClick(test,"UI A");onMain(test,()->{same(savedA[0],Settings.logicProfile(isolated),"Chooser loads A in full");check(fake.applied.size()==before[0]+1,"Selection applies exactly once");same(savedA[0],fake.applied.get(fake.applied.size()-1),"Uploaded profile is selected A");check(input(root(screen),"Profile name").getText().toString().equals("UI A"),"Loaded name replaces editor");before[0]=fake.applied.size();});
-            SystemClock.sleep(750);test.waitForIdleSync();onMain(test,()->{same(savedA[0],Settings.logicProfile(isolated),"Pending debounce cannot overwrite loaded A");check(fake.applied.size()==before[0],"No stale delayed profile application");check(libraryBefore[0].equals(Settings.prefs(isolated).getString(LIBRARY,null)),"Load and typing preserve saved collection bytes");fake.ready=false;click(screen,"Load profile",1);});
-            dialogClick(test,"UI B");onMain(test,()->{same(savedB[0],Settings.logicProfile(isolated),"Offline chooser load persists B");check(fake.applied.size()==before[0]+1,"Offline load makes only one fake apply attempt");check(fake.unexpected.isEmpty(),"No hardware path invoked: "+fake.unexpected);});
-            return "PASS: isolated named-profile legacy seeding, explicit A/B snapshots, active-only autosave and typed names, same-name upsert, full-field load and detached values; top/bottom same-row Save/Load, chooser selection once/cancel, debounce protection, offline persistence; emulator and fake controller only.\n";
+            onMain(test,()->{same(b,Settings.logicDraft(isolated),"A pending debounce from the old form cannot overwrite loaded B");check(fake.applied.size()==before[0],"No stale delayed profile application");click(screen,"Apply to fan",0);
+                check(fake.applied.size()==before[0]+1,"Apply after loading uploads exactly once");same(b,fake.applied.get(fake.applied.size()-1),"Uploaded range is loaded B");same(b,Settings.logicProfile(isolated),"Applied range is loaded B");check(!Settings.logicDraftPending(isolated),"Nothing is left unsent");
+                before[0]=fake.applied.size();tagged(root(screen),"logicProfile").performClick();});
+            dialogClick(test,"Cancel");
+            onMain(test,()->{check(fake.applied.size()==before[0],"Closing the chooser applies nothing");same(b,Settings.logicProfile(isolated),"Closing the chooser preserves the applied range");
+                fake.ready=false;input(root(screen),"Body weight (levels per °F)").setText("1.5");click(screen,"Apply to fan",0);check(fake.applied.size()==before[0]+1&&Settings.logicProfile(isolated).bodyWeight==1.5,"An offline Apply is stored and makes one attempt");check(fake.unexpected.isEmpty(),"No hardware path invoked: "+fake.unexpected);});
+            onMain(test,()->{
+                fake.ready=true;before[0]=fake.applied.size();LogicProfile enabled=Settings.logicProfile(isolated);timeWindowShown(screen,enabled);((CheckBox)tagged(root(screen),"logicTimeWindowEnabled")).setChecked(false);
+                check(!Settings.logicDraft(isolated).timeWindow.enabled&&Settings.logicProfile(isolated).timeWindow.enabled&&fake.applied.size()==before[0],"Disabling a time window stays a draft until Apply");click(screen,"Home",0);click(screen,"Setup",0);
+                LogicProfile disabled=enabled.copy();disabled.timeWindow.enabled=false;timeWindowShown(screen,disabled);same(disabled,Settings.logicDraft(isolated),"Disabled window and its times persist after rebuilding the editor");click(screen,"Apply to fan",0);
+                check(fake.applied.size()==before[0]+1&&!Settings.logicDraftPending(isolated),"Apply uploads disabled window exactly once");same(disabled,Settings.logicProfile(isolated),"Disabled window persists in applied profile");same(disabled,fake.applied.get(fake.applied.size()-1),"Controller receives disabled window with its original times and adjustment");same(b,profiles(isolated).get("UI B"),"Disabling the active window leaves the named snapshot intact");check(fake.unexpected.isEmpty(),"No hardware path invoked by time-window edits: "+fake.unexpected);
+            });
+            onMain(test,()->{
+                before[0]=fake.applied.size();
+                ((EditText)tagged(root(screen),"logicTimeWindowAdjustment")).setText("-1");
+                ((CheckBox)tagged(root(screen),"logicTimeWindowEnabled")).setChecked(true);
+                for(int i=0;i<32;i++)click(screen,"Add window",0);
+                View add=tagged(root(screen),"logicTimeWindowAdd"),last=tagged(root(screen),"logicTimeWindow32");
+                LinearLayout editor=(LinearLayout)add.getParent();View windows=(View)last.getParent();
+                check(add.isEnabled()&&editor.indexOfChild(add)==editor.getChildCount()-1&&editor.indexOfChild(windows)<editor.indexOfChild(add),"Add window stays below the last of 33 windows and has no fixed count limit");
+                ((EditText)tagged(root(screen),"logicTimeWindowAdjustment1")).setText("-3");
+                ((CheckBox)tagged(root(screen),"logicTimeWindowEnabled1")).setChecked(true);
+                LogicProfile overlap=Settings.logicDraft(isolated);
+                check(overlap.timeWindows.size()==33&&overlap.windowAdjustmentAtMinute(270)==-4&&fake.applied.size()==before[0],"Independent -1 and -3 windows overlap as -4 and editing never uploads");
+                ((CheckBox)tagged(root(screen),"logicTimeWindowEnabled1")).setChecked(false);
+                LogicProfile disabled=Settings.logicDraft(isolated);LogicProfile.TimeWindow saved=disabled.timeWindows.get(1);
+                check(disabled.timeWindows.size()==33&&!saved.enabled&&saved.adjustment==-3&&saved.startMinute==270&&saved.endMinute==480&&disabled.windowAdjustmentAtMinute(270)==-1,"Unchecking keeps the window and all settings but excludes its adjustment");
+                click(screen,"Home",0);click(screen,"Setup",0);
+                same(disabled,Settings.logicDraft(isolated),"All windows and disabled settings survive editor rebuild");
+                check(!((CheckBox)tagged(root(screen),"logicTimeWindowEnabled1")).isChecked()&&shown(screen,"logicTimeWindowAdjustment1").equals("-3")&&tagged(root(screen),"logicTimeWindow32")!=null,"Disabled window remains visible alongside all others");
+                Settings.saveNamedLogicProfile(isolated,disabled);same(disabled,Settings.loadLogicProfile(isolated,disabled.name),"Named snapshots retain every enabled and disabled window");
+                ((CheckBox)tagged(root(screen),"logicTimeWindowEnabled1")).setChecked(true);
+                tagged(root(screen),"logicTimeWindowRemove").performClick();
+                LogicProfile remaining=Settings.logicDraft(isolated);
+                check(remaining.timeWindows.size()==32&&remaining.timeWindow.enabled&&remaining.timeWindow.adjustment==-3&&remaining.timeWindow.startMinute==270&&tagged(root(screen),"logicTimeWindow32")==null,"Removing the first window preserves and renumbers the remaining values");
+                click(screen,"Apply to fan",0);check(fake.applied.size()==before[0]+1,"Apply uploads the complete edited list once");same(remaining,fake.applied.get(fake.applied.size()-1),"Apply snapshot includes every remaining window");check(fake.unexpected.isEmpty(),"No hardware path invoked by multi-window edits");
+            });
+            return "PASS: isolated range profiles start from defaults with carried timing, leave earlier threshold profiles untouched, keep applied/unsent/named settings apart, same-name upsert, full-field load and detached values; chooser and Save as on one row, Apply-only upload, confirmed replacement of unsent edits, debounce protection, offline Apply; time-window controls, local time labels, signed adjustment draft/Apply, named roundtrip, overnight values and persistent disable; emulator and fake controller only.\n";
         }finally{
             try{if(activity!=null){Activity closing=activity;onMain(test,closing::finish);test.waitForIdleSync();}}
             finally{try{onMain(test,()->{activeScope=null;if(installed[0]&&BreezeService.current==fake)BreezeService.current=null;});}finally{scope.close();check(originalPreferences.equals(Settings.prefs(real).getAll()),"Real preferences remained unchanged");}}

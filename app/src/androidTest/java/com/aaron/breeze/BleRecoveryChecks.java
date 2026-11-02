@@ -230,8 +230,8 @@ public final class BleRecoveryChecks {
                 manualReady(unknown);unknown.logicSupported=true;
                 check(!unknown.fan.synced()&&unknown.applyLogicProfile(new LogicProfile()),"Unknown physical fan state still accepts an automatic profile");
                 check(unknown.accepted==1&&unknown.writes.get(0)[4]==Protocol.LOGIC_GLOBAL,"An old saved speed must not synchronize an unknown fan before profile upload");
-                for(int i=0;i<6;i++)unknown.finishLast();
-                check(unknown.accepted==6&&!unknown.logicUploading&&!unknown.fan.synced(),"Profile upload completes without claiming the physical fan is synchronized");
+                for(int i=0;i<BreezeService.LOGIC_UPLOAD_PARTS;i++)unknown.finishLast();
+                check(unknown.accepted==BreezeService.LOGIC_UPLOAD_PARTS&&!unknown.logicUploading&&!unknown.fan.synced(),"Profile upload completes without claiming the physical fan is synchronized");
                 for(byte[] packet:unknown.writes)check(packet[4]!=Protocol.SYNC_SPEED&&packet[4]!=Protocol.SEND_IR,"Unknown-state profile upload neither guesses speed nor sends manual IR");
                 check(prefs.getInt("fanAnchor",-1)==1&&!prefs.getBoolean("fanAnchorCorrectionPending",true),"Applying a profile preserves the old preference without treating it as a new correction");
 
@@ -241,8 +241,8 @@ public final class BleRecoveryChecks {
                 byte[] first=corrected.writes.get(0);check(corrected.accepted==1&&first[4]==Protocol.SYNC_SPEED&&first[5]==7&&first[6]==1,"Only the explicit chosen setting is synchronized before the profile");
                 corrected.finishLast();
                 check(!prefs.getBoolean("fanAnchorCorrectionPending",true)&&corrected.accepted==2&&corrected.writes.get(1)[4]==Protocol.LOGIC_GLOBAL,"Confirmed correction clears its pending flag and starts profile upload");
-                for(int i=0;i<6;i++)corrected.finishLast();
-                check(corrected.accepted==7&&!corrected.logicUploading,"The correction and six profile packets are each sent once");
+                for(int i=0;i<BreezeService.LOGIC_UPLOAD_PARTS;i++)corrected.finishLast();
+                check(corrected.accepted==1+BreezeService.LOGIC_UPLOAD_PARTS&&!corrected.logicUploading,"The correction and every profile packet are each sent once");
             });
         }finally{context.deleteSharedPreferences(name);}
     }
@@ -260,11 +260,11 @@ public final class BleRecoveryChecks {
             fake.setFanAnchor(4);check(fake.accepted==2&&fake.writes.get(1)[4]==Protocol.SYNC_SPEED,"explicit fan correction remains available while Logic is paused");
             fake.finishLast();check(fake.accepted==2&&queued(fake)==0,"fan correction cannot automatically resume paused Logic");
             check(!fake.applyLogicProfile(new LogicProfile())&&fake.accepted==2&&fake.testPreferences.getBoolean("homeLogicProfileDeferred",false),"autosaved profile defers its enabling commit while paused");
-            fake.reconnectNow();fake.ready=true;manualReady(fake);byte[] pausedCapability=capability(10);pausedCapability[8]|=8;pausedCapability[10]=2;fake.receive(pausedCapability);fake.receive(pausedCapability);
+            fake.reconnectNow();fake.ready=true;manualReady(fake);byte[] pausedCapability=capability(10);pausedCapability[8]|=8;pausedCapability[10]=3;fake.receive(pausedCapability);fake.receive(pausedCapability);
             check(fake.accepted==3&&fake.writes.get(2)[4]==Protocol.AUTO&&fake.writes.get(2)[5]==0&&queued(fake)==0,"reconnect restores pause once instead of uploading an enabling profile");
             fake.finishLast();fake.receive(pausedCapability);check(fake.accepted==3&&fake.testPreferences.getBoolean("homeLogicPaused",false),"repeated capability status retains persisted pause without extra commands");
             check(fake.applyLogicProfileExplicit(new LogicProfile()),"explicit Setup apply may intentionally resume Logic");
-            for(int part=0;part<5;part++){check(fake.testPreferences.getBoolean("homeLogicPaused",false),"pause intent survives until the commit ACK");fake.finishLast();}
+            for(int part=0;part<BreezeService.LOGIC_UPLOAD_PARTS-1;part++){check(fake.testPreferences.getBoolean("homeLogicPaused",false),"pause intent survives until the commit ACK");fake.finishLast();}
             check(fake.testPreferences.getBoolean("homeLogicPaused",false)&&fake.writes.get(fake.writes.size()-1)[4]==Protocol.LOGIC_COMMIT,"commit submission alone does not clear pause intent");
             fake.finishLast();check(!fake.testPreferences.getBoolean("homeLogicPaused",true)&&!fake.testPreferences.getBoolean("homeLogicProfileDeferred",true)&&!fake.logicUploading,"only a successful explicit profile commit clears pause intent and deferred upload");
 
@@ -273,8 +273,8 @@ public final class BleRecoveryChecks {
 
             manualReady(deferred);deferred.logicSupported=true;deferred.receive(logicPacket(false));deferred.testPreferences.edit().putBoolean("homeLogicPaused",true).putBoolean("homeLogicProfileDeferred",true).apply();
             check(deferred.setHomeLogicEnabled(true)&&deferred.accepted==1&&deferred.writes.get(0)[4]==Protocol.LOGIC_GLOBAL,"Home resume uploads the latest deferred profile instead of enabling obsolete settings");
-            for(int part=0;part<6;part++)deferred.finishLast();
-            check(deferred.accepted==6&&!deferred.testPreferences.getBoolean("homeLogicPaused",true)&&!deferred.testPreferences.getBoolean("homeLogicProfileDeferred",true)&&!deferred.homeLogicReady(),"deferred profile commits once while the toggle awaits confirmed state");
+            for(int part=0;part<BreezeService.LOGIC_UPLOAD_PARTS;part++)deferred.finishLast();
+            check(deferred.accepted==BreezeService.LOGIC_UPLOAD_PARTS&&!deferred.testPreferences.getBoolean("homeLogicPaused",true)&&!deferred.testPreferences.getBoolean("homeLogicProfileDeferred",true)&&!deferred.homeLogicReady(),"deferred profile commits once while the toggle awaits confirmed state");
             deferred.receive(logicPacket(true));check(deferred.homeLogicReady(),"confirmed deferred-profile activation restores Home toggle readiness");
         });
     }
@@ -584,38 +584,55 @@ public final class BleRecoveryChecks {
         });
     }
 
-    private void storageCompletionRequiresMetadata(){
+    private void storageCompletionRequiresMetadata()throws Exception {
         android.content.Context context=test.getTargetContext();
         String databaseName="temporary-ble-storage-completion-"+System.nanoTime()+".db";
-        Store isolated=new Store(context,databaseName);FakeService fake=service();
+        CountDownLatch closed=new CountDownLatch(1);
+        Store isolated=new Store(context,databaseName){@Override public synchronized void close(){try{super.close();}finally{closed.countDown();}}};FakeService fake=service();
         String address="fake-storage-controller";int archive=0x12345678,count=9;
         try{
+            isolated.setCursor(address+":"+archive,count);
             main(()->{
                 setObject(fake,"store",isolated);setObject(fake,"deviceAddress",address);
-                isolated.setCursor(address+":"+archive,count);
                 fake.receive(metadata(7,count,0,false,archive));
                 check(fake.controllerBase==7&&fake.controllerCount==count&&fake.controllerFreeBytes==0&&!fake.controllerStorageReady,"metadata exposes unreclaimed controller storage");
+            });
+            RecordStorageChecks.awaitStorage(test,fake);
+            main(()->{
                 check(fake.accepted==1&&fake.writes.get(0)[1]==5,"durable phone cursor queues retirement");
                 check(ByteBuffer.wrap(fake.writes.get(0)).order(ByteOrder.LITTLE_ENDIAN).getInt(4)==count,"retirement acknowledges the complete saved cursor");
                 fake.finishLast();
                 check(fake.transfer.contains("waiting for controller storage recovery")&&!fake.transfer.contains("storage ready"),"successful command ACK cannot falsely confirm reclaimed space");
                 fake.receive(metadata(7,count,0,false,archive));
+            });
+            RecordStorageChecks.awaitStorage(test,fake);
+            main(()->{
                 check(fake.accepted==2&&fake.writes.get(1)[1]==5,"next metadata can retry uncompleted storage retirement");
                 fake.receive(metadata(7,count,0,false,archive));
+            });
+            RecordStorageChecks.awaitStorage(test,fake);
+            main(()->{
                 check(fake.accepted==2,"repeated metadata does not duplicate retirement while its ACK is pending");
                 fake.receive(metadata(count,count,98304,true,archive));fake.finishLast();
+            });
+            RecordStorageChecks.awaitStorage(test,fake);
+            check(isolated.cursor(address+":"+archive)==count,"storage completion preserves durable phone cursor");
+            main(()->{
                 check(fake.controllerBase==count&&fake.controllerStorageReady&&fake.controllerFreeBytes==98304,"new metadata proves storage recovery and available bytes");
-                check(fake.transfer.equals("Downloaded and confirmed • controller storage ready"),"retirement completion reflects confirmed ready storage");
-                check(fake.accepted==2&&isolated.cursor(address+":"+archive)==count,"storage completion does not erase or change the durable phone cursor");
-
+                check(fake.transfer.equals("Downloaded and confirmed \u2022 controller storage ready"),"retirement completion reflects confirmed ready storage");
+                check(fake.accepted==2,"storage completion sends no extra retirement");
                 fake.sensorFirmware=true;byte[] active=reading(0);active[1]|=(byte)(1|128);fake.receive(active);
                 fake.startSession();check(fake.accepted==2&&fake.lastError.contains("already running"),"active recording cannot issue another start");
                 fake.receive(reading(0));fake.startSession();
+            });
+            RecordStorageChecks.awaitStorage(test,fake);
+            main(()->{
                 check(fake.accepted==3&&fake.writes.get(2)[1]==3&&fake.lastError.contains("storage is unavailable"),"unavailable storage downloads saved records before attempting recording");
                 fake.finishLast();fake.receive(metadata(count,count,98304,true,archive));
             });
+            RecordStorageChecks.awaitStorage(test,fake);
         }finally{
-            main(()->{setObject(fake,"store",null);isolated.close();context.deleteDatabase(databaseName);});
+            main(fake::closeRecordStorage);await(closed,5000,"temporary background store closes after its accepted work");context.deleteDatabase(databaseName);
         }
     }
 
@@ -639,6 +656,37 @@ public final class BleRecoveryChecks {
         main(()->{check(busy.attempts==attempts[0]&&busy.recoveries==1,"late busy timer cannot submit or recover again");busyResult.failures(1);});
     }
 
+    private void doubleHitTimeoutSynchronization(){
+        FakeService fake=service();
+        main(()->{
+            check(Settings.doubleHitTimeout(fake)==0,"Double hits default to off");
+            Settings.saveDoubleHitTimeout(fake,75);manualReady(fake);fake.receive(capability(10));
+            fake.applyDoubleHitTimeout();
+            check(fake.writes.isEmpty()&&fake.doubleHitStatus.contains("update required"),"Older firmware gets no unsupported timeout command");
+            byte[] supported=capability(10);supported[12]=1;fake.receive(supported);
+            check(fake.accepted==1&&fake.writes.get(0)[4]==Protocol.DOUBLE_HIT&&ByteBuffer.wrap(fake.writes.get(0)).order(ByteOrder.LITTLE_ENDIAN).getShort(6)==75,"Advertised firmware receives the saved timeout");
+            fake.receive(supported);check(fake.accepted==1,"Repeated capabilities do not duplicate an in-flight setting");
+            fake.ackLast();check(fake.doubleHitStatus.contains("Applying"),"The setting waits for both ACK and write completion");
+            fake.onWriteCompleted(BluetoothGatt.GATT_SUCCESS);
+            check(fake.doubleHitStatus.contains("75 seconds"),"Completed setting reports its applied seconds");
+            fake.receive(supported);check(fake.accepted==1,"Applied settings are not resent by telemetry");
+            Settings.saveDoubleHitTimeout(fake,120);fake.applyDoubleHitTimeout();
+            Settings.saveDoubleHitTimeout(fake,0);fake.applyDoubleHitTimeout();
+            check(fake.accepted==2,"Rapid edits coalesce behind the in-flight setting");
+            fake.finishLast();check(fake.accepted==3&&fake.writes.get(2)[6]==0&&fake.writes.get(2)[7]==0,"Zero follows the earlier write and disables double hits");
+            fake.finishLast();check(fake.doubleHitStatus.equals("Double hits off"),"Latest applied state is off");
+            fake.recoverConnection("test disconnect");check(!fake.doubleHitSupported&&Settings.doubleHitTimeout(fake)==0,"Disconnect clears controller claims but preserves the saved timeout");
+            fake.ready=true;manualReady(fake);fake.receive(supported);check(fake.accepted==4,"Reconnect reapplies the saved zero setting");fake.finishLast();
+            Settings.saveDoubleHitTimeout(fake,90);fake.applyDoubleHitTimeout();
+            fake.onWriteCompleted(BluetoothGatt.GATT_SUCCESS);byte[] failed=reading(sequence(fake.writes.get(4)));failed[19]=24;fake.receive(failed);
+            check(fake.doubleHitStatus.contains("couldn't apply")&&Settings.doubleHitTimeout(fake)==90,"Failed save remains visible and retains the phone's requested setting");
+            fake.receive(supported);check(fake.accepted==5,"A failed setting is not repeatedly retried on telemetry");
+            fake.applyDoubleHitTimeout();check(fake.accepted==6,"An explicit retry is allowed");fake.finishLast();
+            check(fake.doubleHitStatus.contains("90 seconds"),"Explicit retry completes");
+            for(byte[] write:fake.writes)check(write[4]==Protocol.DOUBLE_HIT,"Timeout synchronization sends no fan motion, Logic or recording commands");
+        });
+    }
+
     private void cleanup(){
         try{main(()->{
             for(FakeService fake:services)try{
@@ -650,7 +698,7 @@ public final class BleRecoveryChecks {
     public static void run(Instrumentation test)throws Exception {
         BleRecoveryChecks checks=new BleRecoveryChecks(test);
         try{
-            checks.manualBusyIsNotRetried();checks.manualAcknowledgedOnceAndNoTapBacklog();checks.manualDoesNotEnterTargetOrRecordingQueue();
+            checks.doubleHitTimeoutSynchronization();checks.manualBusyIsNotRetried();checks.manualAcknowledgedOnceAndNoTapBacklog();checks.manualDoesNotEnterTargetOrRecordingQueue();
             checks.manualReadinessWaitsForStartupWork();checks.manualRejectionReplacesStaleSuccess();
             checks.profileOnlySynchronizesExplicitUserCorrection();checks.homeLogicPauseSurvivesImplicitEnablePaths();checks.homeManualCorrectionRunsOnlyAfterAcknowledgement();checks.homePowerRetainsDeclaredSpeedAndAmbiguityStaysPending();checks.homeKnownWrapAndHighPowerTracking();checks.ambiguousHomeDraftCannotCorrectAnotherCommand();checks.newerDoneOverridesCapturedHomeCorrection();
             checks.busyThenSuccess();checks.expiredBinderFailsWholeQueue();checks.explicitFailureAndCallbackFailure();

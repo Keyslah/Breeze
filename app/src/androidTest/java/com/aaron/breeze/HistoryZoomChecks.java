@@ -33,7 +33,7 @@ public final class HistoryZoomChecks {
     private static double span(GraphView graph){return graph.visibleEndTime()-graph.visibleStartTime();}
     private static List<Store.Point> points(long start,long hours){
         List<Store.Point> result=new ArrayList<>();
-        for(long time=start;time<=start+hours*HOUR;time+=10000){Store.Point p=new Store.Point(time,32,23,55,0);p.secondProbe=31;result.add(p);}
+        for(long time=start;time<=start+hours*HOUR;time+=10000){Store.Point p=new Store.Point(time,34,23,55,0);p.secondProbe=33;result.add(p);}
         return result;
     }
     private GraphView graph(){
@@ -112,7 +112,7 @@ public final class HistoryZoomChecks {
         check(!graph.isZoomed(),"different session ID resets even when first timestamps coincide");
         close(graph.visibleStartTime(),START,"session switch returns to the first reading");
         graph.data(8,new ArrayList<>(),new ArrayList<>(),true,GraphView.ALL_SERIES);check(!graph.isZoomed(),"empty dataset clears zoom safely");
-        graph.data(8,List.of(new Store.Point(START,32,23,55,0)),new ArrayList<>(),true,GraphView.ALL_SERIES);pinch(graph,180);
+        graph.data(8,List.of(new Store.Point(START,34,23,55,0)),new ArrayList<>(),true,GraphView.ALL_SERIES);pinch(graph,180);
         close(span(graph),60000,"single-point data retains a nonzero one-minute window");
     }
 
@@ -177,17 +177,17 @@ public final class HistoryZoomChecks {
     private void visibleTemperatureRange(){
         List<Store.Point> recorded=points(START,10);
         for(Store.Point point:recorded){
-            point.probe=32+0.1*Math.sin((point.time-START)*Math.PI/20000);
+            point.probe=34+0.1*Math.sin((point.time-START)*Math.PI/20000);
             point.secondProbe=100;point.room=5;point.humidity=99;
         }
-        recorded.get(0).probe=10;recorded.get(recorded.size()-1).probe=40;
+        recorded.get(0).probe=33;recorded.get(recorded.size()-1).probe=64;
         GraphView graph=temperatureGraph(31,recorded,new ArrayList<>(),1);
         double[] full=graph.visibleTemperatureRangeC();
-        check(full[0]<=10&&full[1]>=40,"the whole-night temperature range includes enabled nighttime extremes");
+        check(full[0]<=33&&full[1]>=64,"the whole-night temperature range includes enabled nighttime extremes at or above 90°F");
         narrowCenter(graph);
         check(graph.visibleStartTime()>START+2*HOUR&&graph.visibleEndTime()<START+8*HOUR,"zoomed fixture excludes distant extremes");
         double[] local=graph.visibleTemperatureRangeC();
-        check(local[0]<=31.9&&local[1]>=32.1&&temperatureSpan(graph)<1,"local sub-degree fluctuations receive a narrow visible-time temperature scale");
+        check(local[0]<=33.9&&local[1]>=34.1&&temperatureSpan(graph)<1,"local sub-degree fluctuations receive a narrow visible-time temperature scale");
         Set<String> ticks=new HashSet<>();
         for(int i=0;i<=4;i++)ticks.add(graph.temperatureTickLabel(local[0]+(local[1]-local[0])*i/4));
         check(ticks.size()==5,"narrow temperature scales have distinct decimal tick labels");
@@ -199,14 +199,15 @@ public final class HistoryZoomChecks {
             check(highest-lowest>=px(45),"a measured 0.2-degree temperature change must draw a visibly varying trace rather than a flat line");
         }finally{image.recycle();}
         graph.visibleSeries(15);double[] combined=graph.visibleTemperatureRangeC();
-        check(combined[0]<=5&&combined[1]>=100,"every enabled temperature trace contributes to visible auto-range");
+        check(combined[0]>20&&combined[1]>=100,"Enabled body probes share the body range without including ambient temperatures");
+        check(graph.visibleAmbientTemperatureRangeC()[0]<=5&&graph.visibleAmbientTemperatureRangeC()[1]<6,"Room temperature uses its independent ambient range");
         graph.visibleSeries(1|16);sameRange(graph.visibleTemperatureRangeC(),local,"disabled temperature outliers and enabled humidity do not flatten the body trace");
         double start=graph.visibleStartTime(),end=graph.visibleEndTime();
         graph.data(31,recorded,new ArrayList<>(),true,1);
         sameRange(graph.visibleTemperatureRangeC(),local,"Fahrenheit display preserves the same physical auto-range");
         close(graph.visibleStartTime(),start,"unit conversion preserves the visible-time start");close(graph.visibleEndTime(),end,"unit conversion preserves the visible-time end");
         ticks.clear();for(int i=0;i<=4;i++)ticks.add(graph.temperatureTickLabel(local[0]+(local[1]-local[0])*i/4));
-        check(ticks.size()==5&&graph.temperatureTickLabel(32).contains("."),"Fahrenheit tick labels also preserve visible fractional degrees");
+        check(ticks.size()==5&&graph.temperatureTickLabel(34).contains("."),"Fahrenheit tick labels also preserve visible fractional degrees");
         graph.data(31,recorded,new ArrayList<>(),false,1);
         sameRange(graph.visibleTemperatureRangeC(),local,"refreshing the same night preserves the visible temperature range");
         graph.resetZoom();check(temperatureSpan(graph)>30,"Reset zoom restores both whole-night time and temperature detail");

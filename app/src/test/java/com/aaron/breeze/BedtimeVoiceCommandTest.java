@@ -84,6 +84,19 @@ public class BedtimeVoiceCommandTest {
         kind("Breeze stop listening", BedtimeVoiceCommand.Kind.STOP);
         kind("hey Breeze stop listening.", BedtimeVoiceCommand.Kind.STOP);
     }
+    @Test public void acceptsOnlyExactWakePrefixedFanActions() {
+        String[] actions={"power","logic","oscillate","fix fan"};
+        BedtimeVoiceCommand.Kind[] kinds={BedtimeVoiceCommand.Kind.POWER,BedtimeVoiceCommand.Kind.LOGIC,
+                BedtimeVoiceCommand.Kind.OSCILLATE,BedtimeVoiceCommand.Kind.FIX_FAN};
+        for(int i=0;i<actions.length;i++)for(String wake:new String[]{"Breeze ","HEY BREEZE "}){
+            kind(wake+actions[i]+"!",kinds[i]);
+            kind(wake+actions[i]+" please",BedtimeVoiceCommand.Kind.INVALID);
+            kind(wake+"log "+actions[i],BedtimeVoiceCommand.Kind.INVALID);
+            assertTrue(BedtimeVoiceCommand.grammarJson().contains("\""+wake.toLowerCase(java.util.Locale.ROOT)+actions[i]+"\""));
+        }
+        for(String phrase:new String[]{"power","logic","oscillate","fix fan","please Breeze power","I said Breeze logic"})kind(phrase,BedtimeVoiceCommand.Kind.IGNORE);
+        for(String phrase:new String[]{"Breeze power on","Breeze power off","Breeze logic on","Breeze fix","Breeze fan","Breeze oscillate vertical","Breeze power logic","Breeze fix fan power"})kind(phrase,BedtimeVoiceCommand.Kind.INVALID);
+    }
 
     @Test public void grammarIncludesValidCommandsRejectionExamplesAndUnknownSpeech() {
         String grammar = BedtimeVoiceCommand.grammarJson();

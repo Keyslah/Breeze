@@ -25,19 +25,14 @@ struct FanEstimate {
   uint32_t checksum=0;
 };
 uint32_t estimateChecksum(const FanEstimate& state){const uint8_t* b=reinterpret_cast<const uint8_t*>(&state);uint32_t h=2166136261u;for(size_t i=0;i<offsetof(FanEstimate,checksum);i++)h=(h^b[i])*16777619u;return h;}
-// Frozen schema 1 layout from the 1.2.6 build snapshot; do not use future Rule layouts here.
-struct LegacyBoost {
-  uint8_t enabled,extra;
-  uint16_t triggerCentiF,windowSeconds,riseSeconds,holdSeconds,returnSeconds;
-  uint8_t curve,reserved;
-};
-struct LegacyRule {int16_t bodyCentiF;uint16_t stepCentiF;uint8_t minimum,offBelow;LegacyBoost boost;};
-struct LegacyProfile {
-  uint32_t magic;uint16_t schema,revision;uint8_t probeMask,maximum;int16_t roomCentiF;
-  uint16_t averageSeconds,riseSeconds,fallSeconds;LegacyRule rules[2];uint32_t checksum;
-};
-static_assert(sizeof(LegacyBoost)==14&&sizeof(LegacyRule)==20&&sizeof(LegacyProfile)==64&&offsetof(LegacyProfile,checksum)==60,"Preserve the schema 1 NVS layout");
-uint32_t legacyChecksum(const LegacyProfile& profile){const uint8_t* b=reinterpret_cast<const uint8_t*>(&profile);uint32_t h=2166136261u;for(size_t i=0;i<offsetof(LegacyProfile,checksum);i++)h=(h^b[i])*16777619u;return h;}
+// Range profiles use their own key; the earlier threshold profile under "logic-profile" is never rewritten.
+constexpr char rangeProfileKey[]="logic-range";
+constexpr char doubleHitKey[]="ir-double-time";
+constexpr uint16_t maximumDoubleHitSeconds=3600;
+// The fan times its display on its own clock. With the nominal 60 s, single presses were still
+// accepted 60.1 s after the previous press and already swallowed at 58.5 s, so only idle times
+// outside this band (milliseconds per configured second) say for certain what the display is doing.
+constexpr uint32_t displayAwakeBeforeMs=875,displayAsleepFromMs=1100;
 // Distinctive 38 kHz optical test pattern; this is not a learned fan command.
 constexpr uint16_t testPattern=0xA5B,testTimingCount=27;
 void testTimings(uint16_t* raw){
@@ -121,9 +116,12 @@ bool FanRemote::saveCompact(uint8_t slot,const Learned& code,bool migration){
 }
 void FanRemote::begin(){
   sender.begin(); // Output LOW until an explicit transmit; no learned defaults.
+  output.attach();
   storageReady=nvs.begin("breeze-ir",false);
   if(storageReady){
     verified=nvs.getBool("verified",false);
+    const uint32_t seconds=nvs.getUInt(doubleHitKey,0);
+    doubleHitSeconds=seconds<=maximumDoubleHitSeconds?uint16_t(seconds):0;
     // setup calls this before BLE initialization, leaving reclaimed space for PHY calibration.
     bool migrationFailed=false;uint8_t migratedCodes=0;
     for(uint8_t i=0;i<SLOT_COUNT;i++){
@@ -138,7 +136,7 @@ void FanRemote::begin(){
     if(nvs_get_stats(nullptr,&stats)==ESP_OK)Serial.printf("[IR] Compact storage: migrated=%u available NVS entries=%u reserve=%u.\n",migratedCodes,unsigned(stats.available_entries),unsigned(radioReserveEntries));
     else Serial.printf("[IR] Compact storage: migrated=%u; NVS statistics unavailable.\n",migratedCodes);
   }else error=STORAGE;
-  BreezeLogic::Profile profile;bool migrated=false;if(storageReady&&loadProfile(profile,&migrated)){logic.apply(profile);profilePersisted=!migrated;}loadEstimate();
+  BreezeLogic::Profile profile;if(storageReady&&loadProfile(profile)){logic.apply(profile);profilePersisted=true;}loadEstimate();
   receiver.enableIRIn(true);receiver.setUnknownThreshold(10);
   Serial.printf("[IR] IRremoteESP8266 %s RX D6/GPIO%u TX D7/GPIO%u learned=0x%03x. Auto enabled; awaiting confirmed fan state.\n",_IRREMOTEESP8266_VERSION_STR,IR_RECEIVE_PIN,IR_TRANSMIT_PIN,learnedMask);
 }
@@ -152,9 +150,25 @@ void FanRemote::disconnected(){
 }
 uint8_t FanRemote::command(const uint8_t* b){
   const uint8_t action=b[4],value=b[5];uint32_t now=millis();
+  if(action==LOGIC_CLOCK){
+    if(value!=1||b[18]||b[19]||!windowClock.set(now,get32(b+6),int16_t(get16(b+10)),get32(b+12),int16_t(get16(b+16))))return error=BAD_VALUE;
+    return error=OK; // A clock update never resumes automation or touches the archive clock.
+  }
+  if(action==DOUBLE_HIT){
+    const uint16_t seconds=get16(b+6);
+    if(value!=0||seconds>maximumDoubleHitSeconds)return error=BAD_VALUE;
+    if(seconds!=doubleHitSeconds){
+      // Apply only after the durable setting was accepted. A failed save leaves
+      // both the active policy and any accepted command's pending burst intact.
+      if(!storageReady||nvs.putUInt(doubleHitKey,seconds)!=sizeof(uint32_t))return error=STORAGE;
+      doubleHitSeconds=seconds;repeatSlot=NONE;
+    }
+    if(!seconds)repeatSlot=NONE; // Zero always vetoes a queued second burst.
+    return error=OK;
+  }
   if(receiverTestActive()&&action!=CANCEL)return error=BUSY;
-  if(repeatSlot!=NONE&&(action==SEND||action==LEARN||action==CLEAR||action==RECEIVER_TEST))return error=BUSY;
-  if(action>=LOGIC_GLOBAL&&action<=LOGIC_COMMIT)return profileCommand(b);
+  if((repeatSlot!=NONE||heldSlot!=NONE)&&(action==SEND||action==LEARN||action==CLEAR||action==RECEIVER_TEST))return error=BUSY;
+  if((action>=LOGIC_GLOBAL&&action<=LOGIC_COMMIT)||action==LOGIC_WINDOW)return profileCommand(b);
   switch(action){
     case RECEIVER_TEST:
       if(value!=0||get16(b+6)!=0)return error=BAD_VALUE;
@@ -178,17 +192,23 @@ uint8_t FanRemote::command(const uint8_t* b){
       if(value>=SLOT_COUNT)return error=BAD_VALUE;
       if(learning!=NONE)return error=BUSY;
       if(!(learnedMask&(1u<<value)))return error=NOT_LEARNED;
-      automatic=false;target=0;
-      if(transmit(value)!=OK)return error;
+      // Horizontal oscillation is independent of automatic speed control.
+      if(value!=4){automatic=false;target=0;}
+      {
+        const uint8_t sent=transmit(value);
+        // The press is accepted now and leaves from tick() once the display state is certain.
+        if(sent==HELD)heldSlot=value;
+        else if(sent!=OK)return error;
+      }
       if(value==1||value==2){if(synchronized&&powerOn){
         // Dreo's running levels cycle through 1..9,H (H is 10 on the wire).
         estimated=value==1?(estimated==10?1:estimated+1):(estimated==1?10:estimated-1);
-        retainedSpeed=estimated;logicBaseTarget=estimated;saveEstimate();
+        retainedSpeed=estimated;if(!logicWindows.enabled())logicBaseTarget=estimated;saveEstimate();
       }else invalidate(NEED_SYNC);}
       else if(value==0){
         if(powerKnown&&((powerOn&&estimated>=1&&estimated<=10)||(!powerOn&&retainedSpeed>=1&&retainedSpeed<=10))){
           if(powerOn){retainedSpeed=estimated;powerOn=false;estimated=0;}else{powerOn=true;estimated=retainedSpeed;}
-          synchronized=true;logicDirection=0;logicBaseTarget=estimated;saveEstimate();
+          synchronized=true;logicDirection=0;if(!logicWindows.enabled())logicBaseTarget=estimated;saveEstimate();
         }else invalidate(NEED_SYNC);
       }else if(value!=4&&value!=5)invalidate(OK); // Mode/extra semantics are unknown.
       return error=OK;
@@ -201,7 +221,10 @@ uint8_t FanRemote::command(const uint8_t* b){
     case SYNC:
       if(value>10||b[6]!=1)return error=BAD_VALUE;
       if(learning!=NONE)return error=BUSY;
-      target=0;estimated=value;synchronized=true;normalMode=true;powerKnown=true;powerOn=value>0;if(value)retainedSpeed=value;logicDirection=0;logicBaseTarget=value;saveEstimate();
+      target=0;estimated=value;synchronized=true;normalMode=true;powerKnown=true;powerOn=value>0;if(value)retainedSpeed=value;logicDirection=0;
+      // Reported physical output includes the window adjustment; it is not the ordinary baseline.
+      if(!logicWindows.enabled())logicBaseTarget=value;
+      saveEstimate();
       Serial.printf("[FAN] User reports fan setting %u in Normal mode (0=Off, 10=H). Estimated only.\n",value);return error=OK;
     case AUTO:
       if(value>1)return error=BAD_VALUE;
@@ -244,14 +267,29 @@ void FanRemote::capture(uint32_t now){
   else{learnedMask|=1u<<slot;error=OK;learnState=SAVED;Serial.printf("[IR] Saved %s; protocol=%s address=0x%08lx command=0x%08lx bits=%u raw=%u carrier=%ukHz. Physical response not verified.\n",name(slot),typeToString(result.decode_type).c_str(),(unsigned long)code.address,(unsigned long)code.command,code.bits,code.count,code.carrier);}
   receiver.resume();
 }
+FanRemote::Display FanRemote::displayState(uint32_t now)const{
+  if(!doubleHitSeconds)return AWAKE; // The idle second press is opt-in.
+  // No press since boot: the last one predates the restart, so the display has gone dark.
+  if(!pressedOnce)return ASLEEP;
+  const uint32_t idle=now-lastPress; // Unsigned arithmetic survives millis() rollover.
+  if(idle<uint32_t(doubleHitSeconds)*displayAwakeBeforeMs)return AWAKE;
+  return idle>=uint32_t(doubleHitSeconds)*displayAsleepFromMs?ASLEEP:UNSURE;
+}
 uint8_t FanRemote::transmit(uint8_t slot){
   if(repeatSlot!=NONE)return error=BUSY;
-  // Display sleep is only estimated. No reliable Sleep-mode tracking exists.
-  // Before the first transmission, lastSend=0 measures idle time since boot.
-  const bool repeat=uint32_t(millis()-lastSend)>60000;
+  const Display display=displayState(millis());
+  // Sent now, this press could land as a step, as a mere wake-up, or with its repeat as two steps.
+  if(display==UNSURE)return HELD;
   uint8_t result=transmitOnce(slot);
-  if(result==OK&&repeat)repeatSlot=slot;
+  // A dark display only lights up on the first press, so the same full burst follows once.
+  if(result==OK&&display==ASLEEP)repeatSlot=slot;
   return result;
+}
+void FanRemote::sendTimings(uint16_t* raw,uint16_t count,uint16_t carrier){
+  if(output.sendRaw(raw,count,carrier))return;
+  // Without the hardware timer, software timing is the only way left to send this burst.
+  if(softwareBursts<255)softwareBursts++;
+  sender.begin();sender.sendRaw(raw,count,carrier);
 }
 uint8_t FanRemote::transmitOnce(uint8_t slot){
   Learned code;if(!load(slot,code))return error=NOT_LEARNED;
@@ -262,23 +300,32 @@ uint8_t FanRemote::transmitOnce(uint8_t slot){
     uint64_t value=code.value;
     if(rcToggle&&code.protocol==RC5)value=sender.toggleRC5(value);
     if(rcToggle&&code.protocol==RC6)value=sender.toggleRC6(value,code.bits);
+    // The library times its own protocols in software and needs the pin to itself.
+    output.release();sender.begin();
     sent=sender.send((decode_type_t)code.protocol,value,code.bits,0);
   }
-  if(!sent)sender.sendRaw(code.raw,code.count,code.carrier);
+  if(!sent)sendTimings(code.raw,code.count,code.carrier);
   if(code.protocol==RC5||code.protocol==RC6)rcToggle=!rcToggle;
-  lastSend=millis();sentOnce=true;ignoreReceiveUntil=lastSend+250;monitorSendUntil=lastSend+250;
+  lastSend=millis();sentOnce=true;lastPress=lastSend;pressedOnce=true;ignoreReceiveUntil=lastSend+250;monitorSendUntil=lastSend+250;
   lastSent=slot;sendCounter++;Serial.printf("[IR] TX %s via %s; physical response unconfirmed, estimated speed=%d\n",name(slot),sent?"decoded protocol":"raw timings",estimated);return error=OK;
 }
 void FanRemote::tick(float a,float b,float room,uint32_t now,float body2){
+  windowClock.advance(now);
   thirdProbe=body2;controlBody=NAN;source=0;ambient=room;
-  float bodies[3]={a,b,body2};for(uint8_t i=0;i<3;i++)if((logic.profile.probeMask&(1u<<i))&&validBody(bodies[i])&&(!validBody(controlBody)||bodies[i]>controlBody)){controlBody=bodies[i];source=i+1;}
+  float bodies[3]={a,b,body2};for(uint8_t i=0;i<3;i++)if(validBody(bodies[i])&&(!validBody(controlBody)||bodies[i]>controlBody)){controlBody=bodies[i];source=i+1;}
   logic.sample(now,a,b,body2);
   if(receiverTestActive()){receiverTestTick(now);return;}
   capture(now);
   if(repeatSlot!=NONE){
-    // Finish the accepted command without blocking the loop or advancing the
-    // fan estimate twice. Other fan transmissions cannot interleave this pair.
-    if(uint32_t(millis()-lastSend)>=300){uint8_t slot=repeatSlot;repeatSlot=NONE;transmitOnce(slot);}
+    // Repeat the full captured burst once, without changing the estimate twice.
+    // Subsequent automatic steps measure their minimum gap from this burst end.
+    if(!doubleHitSeconds)repeatSlot=NONE;
+    else if(uint32_t(millis()-lastSend)>=300){uint8_t slot=repeatSlot;repeatSlot=NONE;transmitOnce(slot);}
+    return;
+  }
+  if(heldSlot!=NONE){
+    // An accepted manual press waits until the display state is certain; nothing else sends first.
+    if(transmit(heldSlot)!=HELD)heldSlot=NONE;
     return;
   }
   if(learning!=NONE&&uint32_t(now-learningAt)>=30000){learnResultSlot=learning;learning=NONE;learnState=EXPIRED;error=TIMEOUT;Serial.println("[IR] Learning timed out; prior command retained.");}
@@ -286,7 +333,7 @@ void FanRemote::tick(float a,float b,float room,uint32_t now,float body2){
   if(target){
     if(!synchronized){target=0;error=NEED_SYNC;return;}
     if(target==estimated){target=0;return;}
-    if(!sentOnce||uint32_t(millis()-lastSend)>=automaticStepIntervalMs){int direction=target>estimated?1:-1;if(transmit(direction>0?1:2)==OK){estimated+=direction;retainedSpeed=estimated;saveEstimate();if(target==estimated)target=0;}else target=0;}
+    if(!sentOnce||uint32_t(millis()-lastSend)>=automaticStepIntervalMs){int direction=target>estimated?1:-1;const uint8_t sent=transmit(direction>0?1:2);if(sent==OK){estimated+=direction;retainedSpeed=estimated;saveEstimate();if(target==estimated)target=0;}else if(sent!=HELD)target=0;}
     return;
   }
   if(automatic)automaticTick(now);
@@ -319,7 +366,7 @@ void FanRemote::receiverTestTick(uint32_t now){
     uint16_t timings[testTimingCount];testTimings(timings);
     uint32_t sentAt=millis();testAttempts++;testState=2;testDeadline=sentAt+250;testNext=sentAt+1000;
     // Keep the receiver and its interrupt enabled: this test needs real optical feedback.
-    sender.sendRaw(timings,testTimingCount,38);lastSend=millis();sentOnce=true;
+    sendTimings(timings,testTimingCount,38);lastSend=millis();sentOnce=true;
   }
 }
 void FanRemote::recordReceiverInput(decode_results& result,bool duringSend,bool diagnostic){
@@ -350,20 +397,9 @@ void FanRemote::receiverInputPacket(uint8_t* b)const{
   for(uint8_t i=0;i<8;i++)b[8+i]=uint8_t(inputValue>>(i*8));
   set16(b+16,inputRawLength);b[19]=1;
 }
-bool FanRemote::loadProfile(BreezeLogic::Profile& profile,bool* migrated){
-  if(migrated)*migrated=false;if(!storageReady)return false;
-  size_t length=nvs.getBytesLength("logic-profile");
-  if(length==sizeof(profile)&&nvs.getBytes("logic-profile",&profile,sizeof(profile))==sizeof(profile)&&BreezeLogic::valid(profile)&&profile.checksum==BreezeLogic::checksum(profile))return true;
-  LegacyProfile old;
-  if(length!=sizeof(old)||nvs.getBytes("logic-profile",&old,sizeof(old))!=sizeof(old)||old.magic!=0x424C4F47||old.schema!=1||old.checksum!=legacyChecksum(old))return false;
-  BreezeLogic::Profile converted;converted.revision=old.revision;converted.probeMask=old.probeMask;converted.maximum=old.maximum;
-  converted.roomCentiF=converted.coolRoomCentiF=old.roomCentiF;converted.averageSeconds=old.averageSeconds;converted.riseSeconds=old.riseSeconds;converted.fallSeconds=old.fallSeconds;
-  for(uint8_t i=0;i<2;i++){const auto& from=old.rules[i];auto& to=converted.rules[i];to.bodyCentiF=from.bodyCentiF;to.stepCentiF=from.stepCentiF;to.minimum=from.minimum;to.offBelow=from.offBelow;
-    to.boost.enabled=from.boost.enabled;to.boost.extra=from.boost.extra;to.boost.triggerCentiF=from.boost.triggerCentiF;to.boost.windowSeconds=from.boost.windowSeconds;
-    to.boost.riseSeconds=from.boost.riseSeconds;to.boost.holdSeconds=from.boost.holdSeconds;to.boost.returnSeconds=from.boost.returnSeconds;to.boost.curve=from.boost.curve;to.boost.reserved=from.boost.reserved;
-  }
-  if(!BreezeLogic::valid(converted))return false;
-  profile=converted;if(migrated)*migrated=true;return true;
+bool FanRemote::loadProfile(BreezeLogic::Profile& profile){
+  return storageReady&&nvs.getBytesLength(rangeProfileKey)==sizeof(profile)&&nvs.getBytes(rangeProfileKey,&profile,sizeof(profile))==sizeof(profile)&&
+    BreezeLogic::valid(profile)&&profile.checksum==BreezeLogic::checksum(profile);
 }
 void FanRemote::saveEstimate(){
   if(!storageReady)return;FanEstimate state;state.known=powerKnown;state.on=powerOn;state.speed=estimated;state.retained=retainedSpeed;state.normal=normalMode;
@@ -377,46 +413,75 @@ void FanRemote::loadEstimate(){
 }
 bool FanRemote::saveProfile(BreezeLogic::Profile& profile){
   if(!storageReady)return false;profile.checksum=BreezeLogic::checksum(profile);
-  if(nvs.putBytes("logic-profile",&profile,sizeof(profile))!=sizeof(profile))return false;
+  if(nvs.putBytes(rangeProfileKey,&profile,sizeof(profile))!=sizeof(profile))return false;
   BreezeLogic::Profile check;return loadProfile(check)&&check.checksum==profile.checksum;
 }
 uint8_t FanRemote::profileCommand(const uint8_t* b){
   if(learning!=NONE)return error=BUSY;
   switch(b[4]){
     case LOGIC_GLOBAL:
-      if(b[15]!=1&&b[15]!=2)return error=BAD_VALUE;
+      // Byte 15 = 3 marks the range layout; earlier threshold uploads are refused here.
+      if(b[15]!=3||b[5]!=0)return error=BAD_VALUE;
       stagedProfile=logic.profile;profileReceipt=1;
-      stagedProfile.probeMask=b[5];stagedProfile.roomCentiF=int16_t(get16(b+6));stagedProfile.averageSeconds=get16(b+8);
-      stagedProfile.coolRoomCentiF=b[15]==2?int16_t(get16(b+16)):stagedProfile.roomCentiF;
-      stagedProfile.riseSeconds=get16(b+10);stagedProfile.fallSeconds=get16(b+12);stagedProfile.maximum=b[14];return error=OK;
+      memset(stagedWindowAdjustments,0,sizeof(stagedWindowAdjustments));memset(windowReceipt,0,sizeof(windowReceipt));
+      stagedWindowFormat=0;stagedWindowCount=stagedWindowReceived=0;windowStageInvalid=stagedWindowsEnabled=false;
+      stagedProfile.averageSeconds=get16(b+6);stagedProfile.riseSeconds=get16(b+8);stagedProfile.fallSeconds=get16(b+10);stagedProfile.steadinessCenti=get16(b+12);return error=OK;
     case LOGIC_RULE:
-      if(!(profileReceipt&1)||b[5]>1||b[12]!=1)return error=BAD_VALUE;
-      stagedProfile.rules[b[5]].bodyCentiF=int16_t(get16(b+6));stagedProfile.rules[b[5]].stepCentiF=get16(b+8);
-      stagedProfile.rules[b[5]].minimum=b[10];stagedProfile.rules[b[5]].offBelow=b[11];profileReceipt|=1u<<(1+b[5]);return error=OK;
+      if(!(profileReceipt&1)||b[5]!=0||b[16]!=3)return error=BAD_VALUE;
+      stagedProfile.offRoomCentiF=int16_t(get16(b+6));stagedProfile.offBodyCentiF=int16_t(get16(b+8));
+      stagedProfile.fullRoomCentiF=int16_t(get16(b+10));stagedProfile.fullBodyCentiF=int16_t(get16(b+12));stagedProfile.bodyWeightCenti=get16(b+14);profileReceipt|=2;return error=OK;
     case LOGIC_BOOST:{
-      if(!(profileReceipt&1)||b[5]>1||b[19]!=1)return error=BAD_VALUE;
-      auto& boost=stagedProfile.rules[b[5]].boost;boost.enabled=b[6];boost.extra=b[7];boost.triggerCentiF=get16(b+8);
+      if(!(profileReceipt&1)||b[5]!=0||b[19]!=3)return error=BAD_VALUE;
+      auto& boost=stagedProfile.boost;boost.enabled=b[6];boost.extra=b[7];boost.triggerCentiF=get16(b+8);
       boost.windowSeconds=get16(b+10);boost.riseSeconds=get16(b+12);boost.holdSeconds=get16(b+14);boost.returnSeconds=get16(b+16);boost.curve=b[18];
-      profileReceipt|=1u<<(3+b[5]);return error=OK;
+      profileReceipt|=4;return error=OK;
+    }
+    case LOGIC_WINDOW:{
+      if(!(profileReceipt&1)||windowStageInvalid)return error=BAD_VALUE;
+      // A malformed/mixed upload cannot accidentally commit a partial replacement.
+      auto invalid=[this](){windowStageInvalid=true;return error=BAD_VALUE;};
+      const uint8_t format=b[11];
+      if(format!=1&&format!=2)return invalid();
+      for(uint8_t i=format==1?12:16;i<20;i++)if(b[i])return invalid();
+      const uint16_t index=format==1?0:get16(b+12),count=format==1?1:get16(b+14);
+      if(count<1||count>BreezeLogic::MAX_TIME_WINDOW_SEGMENTS||index>=count)return invalid();
+      if(stagedWindowFormat&&(stagedWindowFormat!=format||stagedWindowCount!=count))return invalid();
+      if(windowReceipt[index/8]&(1u<<(index%8)))return invalid();
+      BreezeLogic::TimeWindow candidate;candidate.enabled=b[5];candidate.startMinutes=get16(b+6);candidate.endMinutes=get16(b+8);candidate.adjustment=int8_t(b[10]);
+      if(!candidate.valid())return invalid();
+      // Accumulate in 16 bits without clamping so mixed signs remain order-independent.
+      for(uint16_t minute=0;minute<BreezeLogic::MINUTES_PER_DAY;minute++)if(candidate.contains(minute))stagedWindowAdjustments[minute]+=candidate.adjustment;
+      stagedWindowCount=count;stagedWindowFormat=format;stagedWindowsEnabled|=candidate.enabled!=0;
+      windowReceipt[index/8]|=uint8_t(1u<<(index%8));stagedWindowReceived++;profileReceipt|=8;return error=OK;
     }
     case LOGIC_COMMIT:{
-      if(profileReceipt!=31||!BreezeLogic::valid(stagedProfile))return error=BAD_VALUE;
+      if((profileReceipt!=7&&profileReceipt!=15)||windowStageInvalid||!BreezeLogic::valid(stagedProfile)||
+        stagedWindowReceived!=stagedWindowCount)return error=BAD_VALUE;
       bool changed=!BreezeLogic::sameSettings(stagedProfile,logic.profile);
-      if(!changed&&profilePersisted){profileReceipt=0;automatic=true;target=0;return error=OK;}
-      stagedProfile.revision=logic.profile.revision+(changed?1:0);if(changed&&!stagedProfile.revision)stagedProfile.revision=1;
-      if(!saveProfile(stagedProfile))return error=STORAGE;
-      if(changed)logic.apply(stagedProfile,stagedProfile.probeMask==logic.profile.probeMask);else logic.profile=stagedProfile;
+      if(changed||!profilePersisted){
+        stagedProfile.revision=logic.profile.revision+(changed?1:0);if(changed&&!stagedProfile.revision)stagedProfile.revision=1;
+        if(!saveProfile(stagedProfile))return error=STORAGE;
+        if(changed)logic.apply(stagedProfile,true);else logic.profile=stagedProfile;
+      }
+      // Off/H bounds make offsets beyond +/-10 equivalent; clamp only the completed sum.
+      for(uint16_t minute=0;minute<BreezeLogic::MINUTES_PER_DAY;minute++){
+        const int value=stagedWindowAdjustments[minute];
+        logicWindows.adjustments[minute]=value<-BreezeLogic::MAX_LEVEL?-BreezeLogic::MAX_LEVEL:value>BreezeLogic::MAX_LEVEL?BreezeLogic::MAX_LEVEL:value;
+      }
+      logicWindows.count=stagedWindowCount;logicWindows.anyEnabled=stagedWindowsEnabled;
       profilePersisted=true;profileReceipt=0;automatic=true;target=0;if(changed){logicDirection=0;logicDecision={};}
-      Serial.printf("[LOGIC] Applied revision %u; automation enabled, probe mask=%u.\n",logic.profile.revision,logic.profile.probeMask);return error=OK;
+      Serial.printf("[LOGIC] Applied range revision %u; automation enabled.\n",logic.profile.revision);return error=OK;
     }
   }
   return error=BAD_VALUE;
 }
 void FanRemote::automaticTick(uint32_t now){
-  logicDecision=logic.evaluate(now,ambient,logicBaseTarget);
-  if(logicDecision.hold){logicWanted=estimated;logicBaseTarget=estimated;logicDirection=0;target=0;error=powerKnown&&synchronized?OK:NEED_SYNC;return;}
-  if(!logicDecision.ready){logicWanted=0;logicDirection=0;error=logic.bodyAvailable(now)?NO_ROOM:NO_BODY;return;}
-  logicBaseTarget=logicDecision.baseline;logicWanted=logicDecision.target;
+  logicDecision=logic.evaluate(now,ambient,logicBaseTarget,!logicWindows.enabled()||logicBaselineReady);
+  // Without a room or body reading the fan stays where it is.
+  if(!logicDecision.ready){logicWanted=estimated;logicDirection=0;error=logic.bodyAvailable(now)?NO_ROOM:NO_BODY;return;}
+  logicBaseTarget=logicDecision.baseline;logicBaselineReady=true;
+  // Add every active window to the ordinary Logic/boost target, then clamp once.
+  logicWanted=BreezeLogic::adjustedTarget(logicDecision.target,windowClock.adjustment(logicWindows));
   if((learnedMask&7)!=7){error=NOT_LEARNED;return;}
   if(!synchronized||!normalMode||!powerKnown){error=NEED_SYNC;return;}
   error=OK;
@@ -444,12 +509,17 @@ void FanRemote::automaticTick(uint32_t now){
   if(transmit(direction>0?1:2)==OK){estimated+=direction;retainedSpeed=estimated;logicDirection=direction;logicNextStep=millis()+interval;saveEstimate();}
 }
 void FanRemote::logicStatusPacket(uint8_t* b,uint32_t now)const{
+  const bool scored=automatic&&logicDecision.ready&&isfinite(logicDecision.score);
   memset(b,0,20);b[0]=9;b[1]=(automatic?1:0)|(automatic&&logicDecision.boost?2:0)|4|
-    ((!synchronized||!powerKnown||(!powerOn&&retainedSpeed==0&&logicWanted>0))?8:0)|(!logic.bodyAvailable(now)?16:0)|(validBody(thirdProbe)?32:0);
-  b[2]=logicDecision.ready?logicDecision.rule:255;b[3]=automatic?logicWanted:target;
+    ((!synchronized||!powerKnown||(!powerOn&&retainedSpeed==0&&logicWanted>0))?8:0)|(!logic.bodyAvailable(now)?16:0)|(validBody(thirdProbe)?32:0)|(scored?64:0);
+  b[2]=logicDecision.ready?0:255;b[3]=automatic?logicWanted:target;
   float average=logic.averageF(now);set16(b+4,isfinite(average)?lroundf(average*100):0);set16(b+6,isfinite(ambient)?lroundf(BreezeLogic::fahrenheit(ambient)*100):0);
-  set16(b+8,automatic?logicDecision.boostSeconds:0);set16(b+10,logic.profile.revision);b[12]=error;b[13]=logic.profile.probeMask;
-  set16(b+14,validBody(thirdProbe)?lroundf(thirdProbe*100):0);b[19]=1;
+  set16(b+8,automatic?logicDecision.boostSeconds:0);set16(b+10,logic.profile.revision);b[12]=error;b[13]=BreezeLogic::ALL_PROBES;
+  set16(b+14,validBody(thirdProbe)?lroundf(thirdProbe*100):0);
+  // Signed centi-levels: 0 is the Off point and 1000 the Full point.
+  if(scored){float value=logicDecision.score*100;set16(b+16,int16_t(value>30000?30000:value<-30000?-30000:lroundf(value)));}
+  b[18]=automatic?uint8_t(windowClock.adjustment(logicWindows)):0;
+  b[19]=1;
 }
 void FanRemote::receiverTestPacket(uint8_t* b,uint32_t now)const{
   memset(b,0,20);b[0]=7;b[1]=testState;b[2]=testAttempts;b[3]=testMatched;b[4]=testFrames;
@@ -458,7 +528,7 @@ void FanRemote::receiverTestPacket(uint8_t* b,uint32_t now)const{
   b[13]=testIdle;b[14]=38;b[15]=IR_TRANSMIT_PIN;b[16]=IR_RECEIVE_PIN;b[19]=1;
 }
 void FanRemote::statusPacket(uint8_t* b,float rawBody1,uint8_t phase)const{
-  memset(b,0,20);b[0]=5;b[1]=(validBody(rawBody1)?1:0)|(automatic?2:0)|(synchronized?4:0)|(verified?8:0)|(normalMode?16:0)|(target?32:0);
+  memset(b,0,20);b[0]=5;b[1]=(validBody(rawBody1)?1:0)|(automatic?2:0)|(synchronized?4:0)|(verified?8:0)|(normalMode?16:0)|(target?32:0)|(heldSlot!=NONE?64:0);
   set16(b+2,validBody(rawBody1)?lroundf(rawBody1*100):0);b[4]=estimated;b[5]=target;b[6]=learning;b[7]=learnState;set16(b+8,learnedMask);b[10]=error;b[11]=source;
   set16(b+12,validBody(controlBody)?lroundf(controlBody*100):0);b[14]=learnResultSlot;b[15]=lastSent;set16(b+16,sendCounter);b[18]=phase;b[19]=7;
 }

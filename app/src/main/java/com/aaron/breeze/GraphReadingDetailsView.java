@@ -16,6 +16,8 @@ import java.util.List;
 public final class GraphReadingDetailsView extends LinearLayout {
     public interface SeriesChangedListener {void onSeriesChanged(int series,boolean checked);}
     private static final int INK=0xffe5eee6,MUTED=0xffa6b9ac;
+    // Presentation order is separate from persisted series IDs and checkbox bit masks.
+    private static final int[][] DISPLAY_GROUPS={{GraphView.HIGHEST_BODY_SERIES,2,GraphView.FAN_SETTING_SERIES,GraphView.DREO_TEMPERATURE_SERIES},{3,5,4,0,1,GraphView.D2_BODY_SERIES}};
     private final TextView feeling,note;
     private final LinearLayout rows;
     private final List<ReadingCell> cells=new ArrayList<>();
@@ -45,6 +47,8 @@ public final class GraphReadingDetailsView extends LinearLayout {
         for(int series=0;series<cells.size();series++){
             String value=details!=null&&series<details.values.size()?details.values.get(series).value:emptyValue(series);
             if(!value.contentEquals(cells.get(series).value.getText()))cells.get(series).value.setText(value);
+            String label=details!=null&&series<details.values.size()?details.values.get(series).label:GraphView.LABELS[series];
+            if(!label.contentEquals(cells.get(series).label.getText())){cells.get(series).label.setText(label);cells.get(series).label.setContentDescription(label+" trace");}
         }
         String message=details==null?"":details.note;
         if(!message.contentEquals(note.getText()))note.setText(message);note.setVisibility(message.isEmpty()?GONE:VISIBLE);
@@ -64,10 +68,10 @@ public final class GraphReadingDetailsView extends LinearLayout {
     private void rebuildRows(){
         for(ReadingCell cell:cells)if(cell.getParent() instanceof ViewGroup)((ViewGroup)cell.getParent()).removeView(cell);
         rows.removeAllViews();
-        for(int index=0;index<cells.size();index+=columns){
+        for(int[] group:DISPLAY_GROUPS)for(int index=0;index<group.length;index+=columns){
             LinearLayout row=new LinearLayout(getContext());row.setOrientation(HORIZONTAL);
             for(int column=0;column<columns;column++){
-                int at=index+column;View cell=at<cells.size()?cells.get(at):new View(getContext());
+                int at=index+column;View cell=at<group.length?cells.get(group[at]):new View(getContext());
                 LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,LayoutParams.WRAP_CONTENT,1);
                 if(column<columns-1)params.setMarginEnd(dp(12));row.addView(cell,params);
             }
@@ -79,7 +83,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
         final CheckBox label;final TextView value;
         ReadingCell(int series){
             super(GraphReadingDetailsView.this.getContext());setOrientation(VERTICAL);setPadding(dp(2),0,dp(2),dp(2));
-            label=new CheckBox(getContext());label.setText(GraphView.LABELS[series]);label.setTextSize(16);label.setTextColor(GraphView.COLORS[series]);
+            label=new CheckBox(getContext());label.setTag("historySeries"+series);label.setText(GraphView.LABELS[series]);label.setTextSize(16);label.setTextColor(GraphView.COLORS[series]);
             label.setButtonTintList(ColorStateList.valueOf(GraphView.COLORS[series]));label.setMinWidth(0);label.setMinimumWidth(0);label.setMinHeight(dp(48));label.setMinimumHeight(dp(48));
             label.setPadding(0,0,0,0);label.setGravity(Gravity.CENTER_VERTICAL|Gravity.START);label.setContentDescription(GraphView.LABELS[series]+" trace");label.setChecked((visibleSeries&(1<<series))!=0);
             label.setOnCheckedChangeListener((button,checked)->{
@@ -98,7 +102,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
             return Math.max(labelWidth,valueWidth)+getPaddingLeft()+getPaddingRight()+dp(4);
         }
     }
-    private String emptyValue(int series){return series==GraphView.FAN_SETTING_SERIES?"Unknown":"—";}
+    private String emptyValue(int series){return "—";}
     private TextView text(String content,int size,int color){TextView view=new TextView(getContext());view.setText(content);view.setTextSize(size);view.setTextColor(color);return view;}
     private LinearLayout.LayoutParams wrap(){return new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.WRAP_CONTENT);}
     private int dp(float value){return Math.round(value*getResources().getDisplayMetrics().density);}

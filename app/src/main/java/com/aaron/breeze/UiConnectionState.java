@@ -6,7 +6,7 @@ import java.util.function.LongSupplier;
 final class UiConnectionState {
     static final long BACKGROUND_GRACE_MS = 120000;
     private final LongSupplier clock;
-    private boolean visible, disconnected;
+    private boolean visible, disconnected, synchronizing, listening;
     private long generation;
     private long backgroundDeadlineMs = -1;
 
@@ -17,7 +17,7 @@ final class UiConnectionState {
         if (visible == value) return;
         if (value) {
             // A brief Camera/app switch keeps the same connection and pending commands.
-            if (disconnected || backgroundRemainingMs() == 0) generation++;
+            if (disconnected || (!synchronizing && !listening && backgroundRemainingMs() == 0)) generation++;
             visible = true;
             disconnected = false;
             backgroundDeadlineMs = -1;
@@ -27,7 +27,16 @@ final class UiConnectionState {
         }
     }
 
-    void disconnect() { disconnected = true; generation++; backgroundDeadlineMs = -1; }
+    void disconnect() { disconnected = true; synchronizing = false; listening = false; generation++; backgroundDeadlineMs = -1; }
+
+    /** A configured Dreo session may continue after lock, but cannot start a hidden session. */
+    void setSynchronizing(boolean value) {
+        synchronizing = value && !disconnected && (visible || synchronizing || backgroundRemainingMs() > 0);
+    }
+    /** An already-started recording listener may retain its connection after lock, never create a hidden session. */
+    void setListening(boolean value) {
+        listening = value && !disconnected && (visible || listening || backgroundRemainingMs() > 0);
+    }
 
     boolean requestStart(boolean userRequested) {
         if (!visible) return false;
@@ -35,7 +44,7 @@ final class UiConnectionState {
         return !disconnected;
     }
 
-    boolean allows(long session) { return !disconnected && session == generation && (visible || backgroundRemainingMs() > 0); }
+    boolean allows(long session) { return !disconnected && session == generation && (visible || synchronizing || listening || backgroundRemainingMs() > 0); }
     long backgroundRemainingMs() {
         return visible || disconnected || backgroundDeadlineMs < 0 ? 0 : Math.max(0, backgroundDeadlineMs - clock.getAsLong());
     }

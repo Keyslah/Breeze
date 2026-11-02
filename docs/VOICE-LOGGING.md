@@ -1,15 +1,42 @@
 # Silent voice logging
 
-Listening is disabled by default. In **Setup → Voice during recording**, the saved
+Listening is disabled by default. In **Setup → Voice commands**, the saved
 **Disable listening** checkbox keeps the microphone off until you explicitly uncheck
 it. Recording starts, reconnects, permission results, and restarts cannot override it.
 Sensor recording does not need microphone permission while listening is disabled.
 
-If you choose to uncheck it, start recording in Breeze while the phone is unlocked.
-Listening then starts automatically.
-You can then lock the phone and say **Breeze, warm seven** or **Breeze, cold three**.
+**Only listen while plugged in** is a separate, saved option in the same card.
+It starts unchecked to preserve existing behavior. When checked, unplugging
+pauses audio capture and releases the microphone, recognizer and voice wake lock;
+sensor recording continues. External USB, AC or wireless power counts even when
+the battery is already full. Plugging back in resumes an already-running
+foreground listener, whether or not sensor recording is active. If the listener was never started,
+was stopped, or the app process ended, open Breeze while unlocked to start it.
+The **Disable listening** checkbox and an explicit Pause remain stronger vetoes:
+plugging in cannot override either.
+
+After unchecking **Disable listening**, listening starts while Breeze is open and
+the phone is unlocked, subject to microphone permission and the power setting.
+You can then lock the phone. Fan commands work without starting a recording.
+While sensor recording is active, say **Breeze, warm seven** or **Breeze, cold three**
+to save a feeling. Outside a recording, a warm/cold command shows a reminder to
+start recording and does not create a feeling entry.
 Say the whole command together. **Hey Breeze** and **Breeze, log warm level two**
 also work. There are no spoken announcements, confirmations, or errors.
+
+The active listener also accepts these complete commands:
+
+- **Breeze, power** toggles fan power using the existing Power action.
+- **Breeze, oscillate** toggles horizontal, side-to-side movement.
+- **Breeze, logic** toggles the controller-confirmed Logic state on or off.
+- **Breeze, fix fan** requests a fresh read-only Dreo check and synchronizes
+  the app/controller estimate with the reported fan state using the existing
+  freshness and correction checks. It requires the saved Dreo connection.
+
+These commands require a fresh, idle controller connection. A rejected command
+is not saved for later replay. A short repeat guard prevents rapid duplicate
+fan toggles; status and failures appear in the voice card. Spoken recognition
+and controller acknowledgements do not prove physical fan reception.
 
 Warm and cold accept intensities 1–10. Each recognized valid command saves the
 phone's current timestamp, original local offset/timezone, canonical WARM/COLD,
@@ -43,15 +70,26 @@ Warm 7 / 10**. Measurements use the nearest actual sample to the feeling's time;
 missing or distant readings remain blank rather than borrowing a value from
 another part of the night.
 
+**Smooth Highest temp (2-minute average)**, below the graph, is an optional saved
+display setting. It averages the highest available D0/D1/D2 body temperature
+within one minute before and after each sample. The Highest trace, its labeled
+smoothed readout and graph scale use that average. Missing readings and recording
+gaps stay disconnected. Individual probes, room/outdoor temperatures, humidity,
+fan settings, sensor exports and the original saved recordings are unchanged.
+Uncheck it to restore the original Highest trace immediately.
+
 ## Recording and Bluetooth
 
-Voice stops when the controller confirms recording ended. **Breeze, stop listening**
-or **Pause listening** pauses only the listener for that recording. **Resume listening**
-starts it again; the next recording enables it automatically only if **Disable
+Stopping sensor recording keeps fan voice commands available. **Breeze, stop listening**
+or **Pause listening** pauses the listener. **Resume listening** starts it again;
+the next recording enables it automatically only if **Disable
 listening** is unchecked. Checking **Disable listening** stops the listener immediately
 and stays in effect for all subsequent recordings.
 
-Bluetooth stays connected for 2 minutes after leaving Breeze or locking the phone.
+An already-started listener retains its existing Bluetooth connection
+so fan commands can work while locked. This cannot override explicit Disconnect
+phone or create a new hidden connection. Otherwise, Bluetooth stays connected for
+2 minutes after leaving Breeze or locking the phone.
 Returning before the deadline cancels the countdown and preserves the connection.
 After 2 minutes away, scans/retries stop and the connection closes without stopping
 the controller's recording. Downloads resume when you open Breeze again.
@@ -72,11 +110,14 @@ not **Hey Google**. No Tasker, Firebase, Keep, Sheets, server, cloud database, o
 audio upload is involved. Raw microphone audio is not saved by this feature.
 
 Allow Breeze microphone access while using the app and notifications for visible
-listening status. Start recording, or open Breeze during an existing recording,
-while unlocked. Once started, listening continues with Breeze in the background
+listening status. Open Breeze while unlocked to start enabled listening.
+Once started, listening continues with Breeze in the background
 and the screen locked. After force stop, reboot, or process death, reopen Breeze
 while unlocked; this app cannot start a new microphone service from the background.
 See [Android microphone foreground service requirements](https://developer.android.com/develop/background-work/services/fgs/service-types#microphone).
+The power-only option keeps an existing foreground service dormant between power
+changes rather than trying to create a new microphone service from a background
+broadcast, consistent with [Android's background-start restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start).
 
 No media volume or installed text-to-speech voice is needed. Other apps or calls
 can temporarily take the microphone. Continuous microphone recognition uses
@@ -113,6 +154,33 @@ Files changed for production logging:
 
 Source and the pre-upgrade phone database are preserved in
 `backups/2026-10-07-before-live-feeling-logging/`.
+
+## Local build and validation — October 24, 2026
+
+The same APK was subsequently installed on the Pixel 8 Pro, together with ESP
+firmware 1.2.23. See [deployment and data-preservation evidence](VALIDATION.md#phone-and-cumulative-window-firmware-installed---october-24-2026).
+
+Added the saved plugged-only listening option, four fan voice commands and the
+optional two-minute Highest temperature average described above. This APK also
+includes the cumulative daily Logic windows built earlier on October 24.
+
+`assembleDebug`, `testDebugUnitTest`, `lintDebug` and
+`assembleDebugAndroidTest` passed using
+`-PbreezeBuildDir=out-voice-power-smoothing-20261024` and
+`-I tests/preserve-results.gradle`. The final run passed all 196 JVM tests
+with no failures or skips. Lint reported zero errors and 43 warnings.
+Coverage includes command parsing/dispatch, power policy, Bluetooth lifetime,
+and averaging boundaries. The isolated power-event and graph instrumentation
+fixtures compiled but were not run on a phone or emulator.
+
+APK: `app/out-voice-power-smoothing-20261024/outputs/apk/debug/app-debug.apk`
+(86,872,153 bytes). SHA-256:
+`7201634748EA85BA909A3B68FF473426D180240BE7A38517A4B61E935ED2CE5F`.
+
+Nothing was installed or sent to the phone, controller, fan or Dreo account.
+Real speech recognition, locked-phone unplug/replug behavior, physical fan
+responses and the graph's on-device appearance remain to be checked later.
+The previously built cumulative-window firmware is unchanged by these additions.
 
 ## Installed build and validation — October 7, 2026
 

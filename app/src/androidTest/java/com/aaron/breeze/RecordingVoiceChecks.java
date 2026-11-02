@@ -45,9 +45,9 @@ public final class RecordingVoiceChecks {
     public static String run(Instrumentation test) throws Exception {
         Context context = test.getTargetContext();
         if (context.getSystemService(KeyguardManager.class).isKeyguardLocked())
-            return "SKIPPED: unlock the phone before recording-linked voice lifecycle checks\n";
+            return "SKIPPED: unlock the phone before independent voice lifecycle checks\n";
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
-            return "SKIPPED: allow Breeze microphone access before recording-linked voice lifecycle checks\n";
+            return "SKIPPED: allow Breeze microphone access before independent voice lifecycle checks\n";
         boolean[] occupied = {false};
         test.runOnMainSync(() -> occupied[0] = BreezeService.current != null || BedtimeVoiceService.current != null);
         if (occupied[0])
@@ -55,6 +55,8 @@ public final class RecordingVoiceChecks {
 
         FakeController fake = new FakeController();
         boolean wasDisabled = RecordingVoiceController.isListeningDisabled(context);
+        boolean wasPluggedOnly = RecordingVoiceController.isOnlyListenWhilePluggedIn(context);
+        boolean hadPluggedOnly = Settings.prefs(context).contains("onlyListenWhilePluggedIn");
         Activity activity = null;
         StringBuilder evidence = new StringBuilder();
         test.runOnMainSync(() -> {
@@ -62,46 +64,59 @@ public final class RecordingVoiceChecks {
             BreezeService.current = fake;
             RecordingVoiceController.startFailed(context);
             RecordingVoiceController.onTelemetry(context, false);
+            RecordingVoiceController.setOnlyListenWhilePluggedIn(context, false);
             RecordingVoiceController.setListeningDisabled(context, false);
         });
         try {
             activity = launch(test, context);
             Activity first = activity;
+            test.runOnMainSync(() -> RecordingVoiceController.resume(first));
+            awaitReady(test);
+            test.runOnMainSync(() -> {
+                check(!fake.latest.active(), "No sensor recording is needed to start listening");
+                check(RecordingVoiceController.canRecognize(), "Idle listener accepts fan commands");
+                check(!RecordingVoiceController.canLogFeeling(), "Idle listener cannot save warm/cold feelings");
+            });
+            evidence.append("Enabled listening starts while sensors are idle; fan commands are eligible and feeling saves are gated.\n");
+            Thread firstWorker = voiceWorker(test);
             test.runOnMainSync(() -> {
                 TextView start = find(first.getWindow().getDecorView(), "Start recording");
                 check(start != null && start.isEnabled(), "Home recording control is available");
                 start.performClick();
                 check(fake.starts == 1, "Home start routes only to fake controller");
-                check(RecordingVoiceController.isStarting(), "Voice arms before recording confirmation");
+                check(RecordingVoiceController.isStarting(), "Recording awaits controller confirmation");
                 RecordingVoiceController.onTelemetry(context, false);
                 check(RecordingVoiceController.isStarting(), "Idle packet retains pending start");
-                check(!RecordingVoiceController.canRecognize(), "Pending recording cannot accept voice commands");
-            });
-            await(test, "armed microphone preparation", 25000, () -> {
-                BedtimeVoiceService voice = BedtimeVoiceService.current;
-                return voice != null && boolField(voice, "captureReady");
-            });
-            test.runOnMainSync(() -> {
-                check(!BedtimeVoiceService.current.ready, "Armed idle microphone stays gated");
+                check(RecordingVoiceController.canRecognize(), "Pending recording keeps fan commands available");
+                check(!RecordingVoiceController.canLogFeeling(), "Pending recording cannot save feelings");
+                check(BedtimeVoiceService.current.ready, "Recording startup preserves microphone readiness");
                 check(RecordingVoiceController.isStarting(), "Preparation does not imply active recording");
                 telemetry(context, fake, true);
+                check(RecordingVoiceController.canLogFeeling(), "Confirmed recording enables feeling saves");
             });
             awaitReady(test);
-            evidence.append("Home start prearms; idle packet stays gated; active telemetry enables listening.\n");
+            check(voiceWorker(test) == firstWorker, "Starting sensor recording reuses the listener worker");
+            evidence.append("Home start routes only to fake recording; fan commands remain available while feeling saves await active telemetry.\n");
 
-            Thread firstWorker = voiceWorker(test);
             test.runOnMainSync(first::finish);
             test.waitForIdleSync();
             await(test, "Activity destruction", 5000, first::isDestroyed);
             activity = null;
             test.runOnMainSync(() -> {
-                check(BedtimeVoiceService.current != null, "Closing Activity does not stop an active recording listener");
+                check(BedtimeVoiceService.current != null, "Closing Activity does not stop enabled listening");
                 telemetry(context, fake, false);
+                check(RecordingVoiceController.canRecognize(), "Recording end preserves fan command eligibility");
+                check(!RecordingVoiceController.canLogFeeling(), "Recording end immediately blocks feeling saves");
             });
+            awaitReady(test);
+            check(voiceWorker(test) == firstWorker && firstWorker.isAlive(), "Recording end preserves the same worker while Activity is destroyed");
+            evidence.append("Sensor recording can stop with Activity destroyed while fan listening stays ready on the same worker.\n");
+            test.runOnMainSync(() -> RecordingVoiceController.suppress(context));
             awaitStopped(test, firstWorker);
-            evidence.append("Confirmed idle stops microphone worker with Activity destroyed.\n");
 
             test.runOnMainSync(() -> {
+                telemetry(context, fake, false);
+                check(RecordingVoiceController.isSuppressed(), "Idle telemetry preserves an explicit pause");
                 telemetry(context, fake, true);
                 check(BedtimeVoiceService.current == null, "Telemetry alone does not start a background microphone");
             });
@@ -116,7 +131,7 @@ public final class RecordingVoiceChecks {
                 TextView pause = find(reopened.getWindow().getDecorView(), "Pause listening");
                 check(pause != null && pause.isEnabled(), "Pause listening control is available");
                 pause.performClick();
-                check(RecordingVoiceController.isSuppressed(), "Explicit pause suppresses this recording");
+                check(RecordingVoiceController.isSuppressed(), "Explicit pause suppresses listening");
             });
             awaitStopped(test, rejoinedWorker);
             for (int attempt = 0; attempt < 5; attempt++) {
@@ -124,18 +139,22 @@ public final class RecordingVoiceChecks {
                     telemetry(context, fake, true);
                     RecordingVoiceController.reconcile(reopened);
                     check(RecordingVoiceController.isSuppressed(), "Active telemetry retains explicit pause");
-                    check(BedtimeVoiceService.current == null, "Paused recording must not restart the microphone");
+                    check(BedtimeVoiceService.current == null, "Paused listening must not restart the microphone");
                 });
                 Thread.sleep(150);
             }
             test.runOnMainSync(() -> {
                 telemetry(context, fake, false);
-                check(!RecordingVoiceController.isSuppressed(), "Confirmed recording end resets pause");
+                RecordingVoiceController.reconcile(reopened);
+                check(RecordingVoiceController.isSuppressed(), "Recording end retains an explicit pause");
+                check(BedtimeVoiceService.current == null, "Idle reconciliation cannot undo pause");
+                telemetry(context, fake, false);
+                check(RecordingVoiceController.isSuppressed(), "Repeated idle telemetry cannot undo pause");
                 telemetry(context, fake, true);
                 RecordingVoiceController.reconcile(reopened);
             });
             awaitReady(test);
-            evidence.append("Pause survives repeated active telemetry/reconciliation and resets for the next recording.\n");
+            evidence.append("Pause survives repeated active and idle telemetry/reconciliation; a new recording permits visible Activity reconciliation.\n");
 
             Thread replacedWorker = voiceWorker(test);
             BedtimeVoiceService[] replaced = {null};
@@ -143,15 +162,16 @@ public final class RecordingVoiceChecks {
                 replaced[0] = BedtimeVoiceService.current;
                 check(replaced[0] != null && replacedWorker != null, "Active listener exists before rapid recording rollover");
                 telemetry(context, fake, false);
+                check(!RecordingVoiceController.canLogFeeling(), "Rollover idle boundary blocks feeling saves");
                 telemetry(context, fake, true);
+                check(RecordingVoiceController.canLogFeeling(), "New confirmed recording permits feeling saves");
                 RecordingVoiceController.reconcile(reopened);
             });
-            await(test, "previous recording worker release", 8000, () -> !replacedWorker.isAlive());
-            await(test, "automatic listener replacement after rapid recording rollover", 45000,
-                    () -> BedtimeVoiceService.current != null && BedtimeVoiceService.current != replaced[0]
+            await(test, "listener preserved through rapid recording rollover", 45000,
+                    () -> BedtimeVoiceService.current == replaced[0] && replacedWorker.isAlive()
                             && BedtimeVoiceService.current.ready && RecordingVoiceController.canRecognize()
                             && !RecordingVoiceController.isSuppressed());
-            evidence.append("Idle then active in one callback releases the old worker and automatically readies a new listener.\n");
+            evidence.append("Rapid recording rollover preserves the existing ready worker and updates only feeling eligibility.\n");
             Thread disabledWorker = voiceWorker(test);
             android.os.PowerManager.WakeLock[] disabledLock = {null};
             test.runOnMainSync(() -> {
@@ -172,7 +192,7 @@ public final class RecordingVoiceChecks {
                 check(BedtimeVoiceService.current == null, "Later recording cannot override disabled listening");
             });
             evidence.append("Persistent disable stops the active worker, releases its wake lock, preserves controller recording and vetoes later resume/reconcile/recording.\n");
-            return "PASS: recording-linked voice lifecycle using real Activity, foreground microphone and native model; fake controller only; no record writes\n" + evidence;
+            return "PASS: independent fan voice and recording-gated feelings using real Activity, foreground microphone and native model; fake controller only; no record writes\n" + evidence;
         } finally {
             try {
                 if (activity != null) {
@@ -186,6 +206,7 @@ public final class RecordingVoiceChecks {
                     Thread worker = voiceWorker(test);
                     test.runOnMainSync(() -> {
                         fake.latest.flags = 128;
+                        RecordingVoiceController.setListeningDisabled(context, true);
                         RecordingVoiceController.startFailed(context);
                         RecordingVoiceController.onTelemetry(context, false);
                         context.stopService(new Intent(context, BedtimeVoiceService.class));
@@ -193,6 +214,8 @@ public final class RecordingVoiceChecks {
                     awaitStopped(test, worker);
                 } finally {
                     test.runOnMainSync(() -> {
+                        RecordingVoiceController.setOnlyListenWhilePluggedIn(context, wasPluggedOnly);
+                        if (!hadPluggedOnly) Settings.prefs(context).edit().remove("onlyListenWhilePluggedIn").apply();
                         RecordingVoiceController.setListeningDisabled(context, wasDisabled);
                         if (BreezeService.current == fake) BreezeService.current = null;
                     });
@@ -212,7 +235,7 @@ public final class RecordingVoiceChecks {
         RecordingVoiceController.onTelemetry(context, active);
     }
     private static void awaitReady(Instrumentation test) throws Exception {
-        await(test, "recording microphone readiness", 45000, () -> BedtimeVoiceService.current != null
+        await(test, "microphone readiness", 45000, () -> BedtimeVoiceService.current != null
                 && BedtimeVoiceService.current.ready && RecordingVoiceController.canRecognize());
     }
     private static void awaitStopped(Instrumentation test, Thread worker) throws Exception {
@@ -224,7 +247,6 @@ public final class RecordingVoiceChecks {
         test.runOnMainSync(() -> { if (BedtimeVoiceService.current != null) result[0] = (Thread) field(BedtimeVoiceService.current, "worker"); });
         return result[0];
     }
-    private static boolean boolField(Object target, String name) { return (Boolean) field(target, name); }
     private static Object field(Object target, String name) {
         try { Field field = target.getClass().getDeclaredField(name); field.setAccessible(true); return field.get(target); }
         catch (ReflectiveOperationException failure) { throw new AssertionError(failure); }

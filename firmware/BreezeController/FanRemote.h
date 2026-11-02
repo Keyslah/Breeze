@@ -7,11 +7,12 @@
 #include "Pins.h"
 #include "Sensors.h"
 #include "LogicControl.h"
+#include "IrOutput.h"
 
 class FanRemote {
  public:
   static constexpr uint8_t SLOT_COUNT=12, NONE=255;
-  enum Action:uint8_t {LEARN=1,CANCEL=2,CLEAR=3,SEND=4,TARGET=5,SYNC=6,AUTO=7,VERIFIED=8,FORGET_STATE=9,RECEIVER_TEST=12,LOGIC_GLOBAL=13,LOGIC_RULE=14,LOGIC_BOOST=15,LOGIC_COMMIT=16};
+  enum Action:uint8_t {LEARN=1,CANCEL=2,CLEAR=3,SEND=4,TARGET=5,SYNC=6,AUTO=7,VERIFIED=8,FORGET_STATE=9,RECEIVER_TEST=12,LOGIC_GLOBAL=13,LOGIC_RULE=14,LOGIC_BOOST=15,LOGIC_COMMIT=16,DOUBLE_HIT=17,LOGIC_WINDOW=18,LOGIC_CLOCK=19};
   enum Error:uint8_t {OK=0,NOT_LEARNED=20,NEED_SYNC=21,BUSY=22,TIMEOUT=23,STORAGE=24,BAD_CAPTURE=25,BAD_VALUE=26,NO_BODY=27,NEED_TEST=28,REMOTE_USED=29,RULES_PENDING=30,NO_ROOM=31};
   enum LearnState:uint8_t {IDLE,WAITING,SAVED,EXPIRED,CANCELED,FAILED};
   void begin();
@@ -21,9 +22,12 @@ class FanRemote {
   void receiverTestPacket(uint8_t* b,uint32_t now) const;
   void receiverInputPacket(uint8_t* b) const;
   void logicStatusPacket(uint8_t* b,uint32_t now) const;
-  uint8_t probeMask() const {return logic.profile.probeMask;}
+  uint8_t probeMask() const {return BreezeLogic::ALL_PROBES;}
   int8_t recordedSetting() const {return synchronized&&powerKnown&&estimated>=0&&estimated<=10?estimated:-1;}
   bool receiverTestActive() const {return testState==1||testState==2;}
+  // 1 while the hardware timer owns the LED; the count is bursts that had to use software timing.
+  uint8_t irTiming() const {return output.active()?1:0;}
+  uint8_t softwareBurstCount() const {return softwareBursts;}
   void disconnected();
   void cancelAutomatic(uint8_t reason);
  private:
@@ -41,6 +45,7 @@ class FanRemote {
   static_assert(sizeof(Learned)==1576&&offsetof(Learned,raw)==32&&offsetof(Learned,checksum)==1568,"Preserve the version 1 learned-code layout");
   IRrecv receiver{IR_RECEIVE_PIN,1024,15,true};
   IRsend sender{IR_TRANSMIT_PIN};
+  IrOutput output{IR_TRANSMIT_PIN};
   Preferences nvs;
   bool storageReady=false,automatic=true,synchronized=false,verified=false,normalMode=false;
   bool powerKnown=false,powerOn=false;
@@ -52,7 +57,15 @@ class FanRemote {
   uint16_t learnCarrier=38;
   uint32_t learningAt=0,lastSend=0,ignoreReceiveUntil=0;
   bool sentOnce=false,rcToggle=false;
-  uint8_t repeatSlot=NONE;
+  // What the fan's display is doing, judged only from when it last saw one of our presses.
+  enum Display:uint8_t {AWAKE,UNSURE,ASLEEP};
+  // transmit() answers HELD instead of sending while the display state is uncertain.
+  static constexpr uint8_t HELD=254;
+  uint32_t lastPress=0;
+  bool pressedOnce=false;
+  uint8_t heldSlot=NONE;
+  uint16_t doubleHitSeconds=0;
+  uint8_t repeatSlot=NONE,softwareBursts=0;
   uint8_t testState=0,testAttempts=0,testMatched=0,testFrames=0,testOverflows=0,testIdle=1;
   uint16_t testId=0,testRawLen=0;
   uint32_t testNext=0,testDeadline=0;
@@ -65,6 +78,14 @@ class FanRemote {
   BreezeLogic::Engine logic;
   BreezeLogic::Profile stagedProfile;
   BreezeLogic::Decision logicDecision;
+  BreezeLogic::TimeWindows logicWindows;
+  int16_t stagedWindowAdjustments[BreezeLogic::MINUTES_PER_DAY]{};
+  uint8_t windowReceipt[(BreezeLogic::MAX_TIME_WINDOW_SEGMENTS+7)/8]{};
+  BreezeLogic::WindowClock windowClock;
+  bool logicBaselineReady=false;
+  bool windowStageInvalid=false,stagedWindowsEnabled=false;
+  uint8_t stagedWindowFormat=0;
+  uint16_t stagedWindowCount=0,stagedWindowReceived=0;
   uint8_t profileReceipt=0,logicBaseTarget=0,logicWanted=0;
   int8_t logicDirection=0;
   uint32_t logicNextStep=0;
@@ -78,14 +99,16 @@ class FanRemote {
   void capture(uint32_t now);
   void receiverTestTick(uint32_t now);
   void recordReceiverInput(decode_results& result,bool duringSend,bool diagnostic=false);
-  bool loadProfile(BreezeLogic::Profile& profile,bool* migrated=nullptr);
+  bool loadProfile(BreezeLogic::Profile& profile);
   bool saveProfile(BreezeLogic::Profile& profile);
   void saveEstimate();
   void loadEstimate();
   uint8_t profileCommand(const uint8_t* b);
   void automaticTick(uint32_t now);
+  Display displayState(uint32_t now) const;
   uint8_t transmit(uint8_t slot);
   uint8_t transmitOnce(uint8_t slot);
+  void sendTimings(uint16_t* raw,uint16_t count,uint16_t carrier);
   void invalidate(uint8_t reason);
   static uint32_t checksum(const Learned& code);
   static const char* name(uint8_t slot);

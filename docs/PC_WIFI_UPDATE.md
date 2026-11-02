@@ -4,6 +4,31 @@ The Breeze controller accepts firmware directly from the Windows computer over a
 
 ## Normal update
 
+**Use remote OTA activation. Do not ask the owner to press BOOT.** The running
+firmware exposes opcode 7/action 1 over BLE to enter the same temporary Wi-Fi
+update mode. This was verified again for the 1.2.21 → 1.2.22 update on October
+11, 2026. The updater's older button prompt does not mean a button is required.
+
+Release the phone's BLE connection, verify recording/download/learning/tests
+are idle, pause Logic, and invalidate the old estimate without transmitting
+IR before entering OTA. The existing deployed helper performs these checks:
+
+```powershell
+python firmware/out-ir-hardware-timing-20261010/deploy-check.py prepare --expected 1.2.21
+.\firmware\wireless-update.ps1 -FirmwarePath .\firmware\out-time-window-20261011\BreezeController.ino.bin -SkipBuild
+python firmware/out-ir-hardware-timing-20261010/deploy-check.py finish --expected 1.2.22 --level 0 --retained 1
+```
+
+Those versions and Off/retained-1 values describe this specific deployment;
+check the current controller and fan state before later deployments. The helper
+loads the existing Bleak runtime from
+`C:\Users\aaron\AppData\Local\Temp\breeze-ir-camera-20261008`. Verify the
+running version, rollback cancellation, learned mask and unchanged IR counter
+before restarting the phone connection. Never substitute an IR command for
+post-update state synchronization.
+
+## Historical button-based procedure
+
 The latest recorded installed version is **1.2.5**. Source and build-script
 defaults still identify 1.2.2, so explicitly select patch 5 when reproducing the
 current manual-IR build. From PowerShell in the Breeze project folder, run:

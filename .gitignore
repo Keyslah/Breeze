@@ -17,3 +17,6 @@ firmware/out-*/
 __pycache__/
 *.py[cod]
 /backups/2026-10-09-ota-nvs-recovery/
+
+# Phone snapshots, private recording databases, credentials, and runtime logs.
+/diagnostics/

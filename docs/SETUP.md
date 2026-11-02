@@ -2,6 +2,133 @@
 
 > Current workflow: firmware updates are sent from Windows with `firmware/wireless-update.ps1`; the Android OTA experiment described in older historical sections below is archived and is not part of the live app. Follow [PC_WIFI_UPDATE.md](PC_WIFI_UPDATE.md) for the working procedure.
 
+## Logic time windows
+
+In **Setup → Logic → Time windows**, use **Add window** directly below the last
+window to add as many windows as needed. Each has independent Start, End and
+signed whole-number adjustment fields. Its checkbox enables or disables the
+adjustment without removing the window or its saved settings. Tap **Apply to
+fan** to apply the complete list. New windows start at **4:30 AM–8:00 AM, −1**,
+disabled until enabled. Remove deletes a window from the draft; the last window
+can be disabled and retained.
+Times follow the phone's local time zone and may cross midnight. Start is
+inclusive; End is exclusive. Equal start/end times are rejected when enabled.
+
+All enabled overlapping adjustments are added together: **−1 and −3 make −4**.
+The total is added once to the normal Logic target (including any warming
+boost), then limited to **0 (Off) through H**. For −1, normal 3 becomes 2,
+normal 1 becomes Off, and normal 0 stays Off. It never wraps through the fan's
+cyclic speed range or repeatedly subtracts from the current physical level.
+If the normal target later rises enough, the adjusted target can rise from Off.
+Outside all enabled windows, normal Logic resumes. Manual controls and paused
+Logic retain their existing behavior. Profiles save and load every window,
+including disabled ones. Earlier single-window profiles retain their settings.
+
+Multiple windows require controller firmware **1.2.23**; **1.2.22** still
+supports a single window. Older controllers show an update message when they
+cannot apply the enabled settings. The phone saves the full editable list and
+combines its overlaps into an equivalent daily schedule. The ESP holds the schedule and clock
+in RAM, so boundaries continue working while the phone is locked/disconnected.
+After an ESP restart, reconnect the phone to restore the window and clock.
+The phone supplies the next daylight-saving transition and refreshes the clock
+on profile application/reconnection, clock/time-zone changes while connected,
+and every six connected hours. A controller left disconnected across more than
+one seasonal transition needs a reconnect to learn the later transition.
+Scheduling does not alter the timestamps of an active sensor recording.
+
+## Dreo state synchronization
+
+Open **Fan → Dreo synchronization** and sign in with the United States Dreo
+account that already owns the fan. Select the 565S if more than one is found.
+Discovery accepts the verified **DR-HAF008S / 565S** identity; an unsupported
+model is not treated as compatible because it is another Dreo fan.
+
+For a Google-created account, add a password to the same Dreo account:
+**Dreo → Profile → profile information → Account Security → Change Login
+Password**. Verify the account email, set the password and tap Finish. Google
+sign-in remains available. Use that email and the new Dreo password in Breeze;
+see [Dreo's password instructions](https://support.dreo.com/en/article/create-password-in-app).
+
+Allow the offered Android **battery optimization exemption** for locked-phone
+operation, then connect the Breeze controller. The existing foreground
+notification remains visible. There is one initial state request and then a
+check every **3 minutes**. IR commands do not cause extra requests. Disconnecting
+the controller stops synchronization; **Disconnect Dreo** also forgets the
+encrypted account. Reopen Breeze and connect to restart a stopped session.
+
+The Fan page shows Dreo-reported power, speed, mode and oscillation separately
+from the IR estimate. Normal-mode reports can correct the controller through
+its existing synchronization command without sending IR or resuming paused
+Logic. Other modes remain visible but do not rewrite the controller's
+Normal-mode estimate. Missing fields, unsupported speed values, offline state,
+authentication errors and network failures retain manual IR operation and show
+that Breeze is using an estimate.
+
+The Fan page also shows **Level corrections**. Open **Correction history** for
+the date, time (including seconds), and before → after level of each recorded
+correction. This phone keeps a lifetime total and the latest 1,000 entries,
+readable even away from the controller. Recording begins with this update;
+earlier corrections cannot be recovered. Only a changed, previously known
+estimate acknowledged by the controller counts. Matching checks, failed
+commands and establishing an unknown estimate do not count. Stored diagnostics
+also retain the IR send counter and Dreo read/value timestamps to help compare
+drift with delayed cloud reports; a correction alone does not prove missed IR.
+
+Dreo's state endpoint returns a cloud snapshot. Per-field timestamps describe
+when values last changed, not a new physical measurement. Older/conflicting
+versions and requests overlapping a newer local action are rejected. After a
+local change the existing settling policy uses a newer report or two consistent
+reads. An unchanged value can be real after a missed IR command, so an old
+value-change timestamp alone does not permanently veto correction.
+
+Drift diagnostics keep a temporary event window on the phone, beginning at the
+last accepted matching check. It contains received IR counters/commands, level
+changes, Logic/boost/window telemetry, outbound setting packets and outcomes,
+and every Dreo check. A matching check replaces only that temporary window;
+a mismatch saves the complete window before the correction is queued. Failed,
+stale, incomplete or otherwise inconclusive checks retain the window. Saved
+incidents are available under Correction history > Drift events and are not
+automatically removed. Existing correction counts and graph records are unchanged.
+
+These are received observations: missing BLE notifications, reconnects and
+controller restarts are flagged rather than filled with invented commands.
+The first window may have no matching baseline. Cloud delays remain possible;
+see [compatibility and interface evidence](DREO_SYNC_RESEARCH.md).
+
+Email, password-derived credential and bearer token are encrypted with an
+Android Keystore key. Expired authentication gets one re-login attempt; if it
+fails, use **Sign in again**. Breeze never sends cloud fan-control commands.
+Keeping the service, Bluetooth and CPU active while locked uses more battery
+than the default two-minute background disconnect. Android must grant the
+battery exemption; a visible notification alone does not bypass Doze.
+
+## Double-hit timeout
+
+In Setup, enter **Idle time (seconds)** below Logic. Use **0** to turn
+double hits off, or enter how long the fan keeps its display on (**60** with
+Dreo's Display Auto Off; 1–3600 allowed). Press the keyboard's Done key or leave
+the field to save. The setting applies to manual and automatic commands and
+persists on the controller. It requires firmware 1.2.18; the status below the
+field reports whether it applied. If applying fails, press Done again to retry
+the same value.
+
+From firmware 1.2.21 the controller treats the display as lit until 0.875 of
+that time after its last press (one burst) and as dark from 1.1 of it (the
+burst twice, 300 ms apart). In between it cannot tell, so it accepts the press,
+Home shows "Waiting for the fan's display to turn off, then sending.", and the
+press leaves once the display is certainly dark: at most about 14 seconds with
+60. The first press after a controller restart is sent twice.
+
+This only removes the double step near the cut-off. Measured on October 10, a
+dark display caught few bursts at all, so commands after a pause of more than a
+minute usually did not land; see [validation history](VALIDATION.md).
+
+**Recommended:** turn **Display Auto Off** off in the Dreo app and set Idle time
+to **0** on every phone that runs Breeze. With the display always lit, all ten
+commands checked that afternoon landed as single presses, including ones sent
+after pauses of 90 seconds and seven minutes. Each phone sends its own saved
+idle time when it connects, so a phone left at 60 would bring double hits back.
+
 ## Wiring
 
 > October 9 status: the user-confirmed working transmitter is `D7 -> 220 Ω -> TSAL6200 anode`, with its cathode to GND and the VBUS/47 Ω/transistor branch disconnected. It operates the fan at about eight feet but can lose reception during oscillation. The transistor diagram below is the earlier design, not this working bypass; see [the current handoff](../TROUBLESHOOTING.md) before changing the transmitter.
@@ -47,7 +174,7 @@ The original 3.3 V, 10 kΩ series resistor, 10 kΩ NTC, B3950 and zero-offset co
 
 ## Home recording and graphs
 
-Home needs no scrolling. Its top half shows D0, D1, D2, Highest body temp, SHT40 room temperature and humidity using History's readout style, without checkboxes. Its bottom half contains Power, Speed +, Speed -, Mode, Horizontal, Vertical, Logic, Start recording, Reconnect and Current fan setting. Start recording changes to Stop recording during a session. Logic is blue when confirmed active and purple when paused. Voice controls and the saved-feelings shortcut remain on Setup. Temperature colors: D0 green, D1 coral, D2 lavender, highest body orange, SHT40 gold, outdoors blue (dashed). Humidity colors: SHT40 purple, outdoors cyan (dashed). History combines all temperature and humidity traces on one graph: temperature on the right axis, humidity on the left (0–100%). **Highest body temp** uses the highest available D0/D1/D2 reading at each recorded timestamp; room temperature never contributes. Highest starts enabled, while the three individual body traces start unchecked. Each History readout has its own colored checkbox to show/hide that graph line while keeping the reading visible, and the app remembers those choices. Open History → Choose recorded night → tap a date to load its graph. The list explicitly shows how many nights are saved, including when there is only one. Old sessions retain their original sampling cadence and have no fabricated D1 or D2 readings; their highest line uses whichever body readings were actually recorded.
+Home needs no scrolling. Its top half shows D0, D1, D2, Highest body temp, SHT40 room temperature and humidity using History's readout style, without checkboxes. Its bottom half contains Power, Speed +, Speed -, Mode, Horizontal, Vertical, Logic, Start recording, Reconnect and Current fan setting. Start recording changes to Stop recording during a session. Logic is blue when confirmed active and purple when paused. Voice controls and the saved-feelings shortcut remain on Setup. Temperature colors: D0 green, D1 coral, D2 lavender, highest body orange, SHT40 gold, outdoors blue (dashed). Humidity colors: SHT40 purple, outdoors cyan (dashed). History combines all temperature and humidity traces on one graph: temperature on the right axis, humidity on the left (0–100%). **Highest body temp** uses the highest available D0/D1/D2 reading at each recorded timestamp; room temperature never contributes. Highest starts enabled, while the three individual body traces start unchecked. Each History readout has its own colored checkbox to show/hide that graph line while keeping the reading visible, and the app remembers those choices. Opening History defaults to the newest recording, including a just-started recording as soon as its first records arrive. Use Choose recorded night to inspect an older recording; returning to History selects the newest again. The list explicitly shows how many nights are saved, including when there is only one. Old sessions retain their original sampling cadence and have no fabricated D1 or D2 readings; their highest line uses whichever body readings were actually recorded.
 
 **Fan setting** appears as a stepped line on that same graph and starts checked. Its fixed 0–9 scale is independent of temperature and humidity, with 0 meaning Off. Unchecking it keeps the numerical reading available. Installed firmware 1.2.10 includes the sampled fan-setting estimate in new recordings every ten seconds; unknown or older readings remain Unknown. It also preserves radio storage headroom and has passed a complete wireless update with the USB reader closed. No historical fan setting is reconstructed from old motor fields.
 
@@ -83,7 +210,7 @@ Warm room and Cool room each have their own editable room-temperature threshold.
 
 The body input is the highest valid selected D0/D1/D2 reading at each sample, averaged over an editable window (default 60 seconds). Warm defaults to minimum speed 3, with another level per completed 0.4°F above 98°F. Cool defaults to Off below 98°F and starting speed 1 above it, with the same 0.4°F steps. Each rule has an independent optional sudden-warming boost, with editable extra levels, rise trigger/window, rise/hold/return times and Smooth or Linear curve. Normal full-range transitions default to 10 seconds up and 5 seconds down; both are editable.
 
-On Home, **Current fan setting** beside Reconnect shows the current or last estimate; 0 means Off and the initial display defaults to 1. Correct it when physical buttons or the original remote change the fan, then press the keyboard's **Done**. An unknown controller estimate needs explicit confirmation before automatic commands can run; the displayed default never establishes a physical setting by itself. App-controlled changes update the field. A fan-button tap sends its command first; any edited-setting correction follows after acknowledgement and reflects that command's resulting setting. Unknown effects retain the text for explicit confirmation. Accepted manual app commands pause automatic control. Tap **Logic** to resume or pause; setting corrections do not override a pause. Explicit **Save profile** / **Load profile** also resume the chosen rules. The controller runs the saved rules independently of the phone connection. IR acknowledgements do not prove physical fan response.
+On Home, **Current fan setting** beside Reconnect shows the current or last estimate; 0 means Off and the initial display defaults to 1. Correct it when physical buttons or the original remote change the fan, then press the keyboard's **Done**. An unknown controller estimate needs explicit confirmation before automatic commands can run; the displayed default never establishes a physical setting by itself. App-controlled changes update the field. A fan-button tap sends its command first; any edited-setting correction follows after acknowledgement and reflects that command's resulting setting. Unknown effects retain the text for explicit confirmation. Horizontal preserves automatic control when it is running and leaves it paused when already paused. Other accepted manual app commands pause automatic control. Tap **Logic** to resume or pause; setting corrections do not override a pause. Explicit **Save profile** / **Load profile** also resume the chosen rules. The controller runs the saved rules independently of the phone connection. IR acknowledgements do not prove physical fan response.
 
 Learned signals live in the ESP32 Preferences namespace `breeze-ir`; raw timing data is retained even for decoded captures. The implementation bounds capture size (768 timing entries) and reports storage/capture failure rather than claiming every possible signal can be replayed. Available NVS space can limit the number of slots. The actual Dreo protocol, carrier, frame/repeat behavior, transistor circuit, range and reliable single-step response still require hardware testing. Serial prints decoded protocol/address/command, raw timings, saved slots, sends, sensor samples and received app commands.
 

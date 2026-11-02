@@ -49,7 +49,7 @@ public final class ControlsChecks {
                     check(labels[index].contentEquals(current.getText()),"Home follows live fan setting "+labels[index]);
                 }
                 fake.fan.flags&=~4;fake.fan.speed=0;refresh(screen);
-                for(String name:new String[]{"D0 body","D1 body","D2 body","Highest body temp","SHT40 temp","Humidity"})check(find(root,name)!=null&&find(root,name).isShown(),name+" is visible at launch");
+                for(String name:new String[]{"D0 body","D1 body","D2 body","Highest body temp","Room temp","Humidity"})check(find(root,name)!=null&&find(root,name).isShown(),name+" is visible at launch");
                 for(String absent:new String[]{"Motor test","Rules","Start","Off","Low","Medium","High","Temperature timeline","Connect controller"})check(find(root,absent)==null,"home excludes "+absent);
                 check(find(root,temperature(31.3,originalF))!=null,"body reading");check(find(root,temperature(23.1,originalF))!=null,"fan reading");check(find(root,"58.2%")!=null,"humidity reading");
                 check(find(root,"86.9°F")!=null,"D1 raw reading visible");

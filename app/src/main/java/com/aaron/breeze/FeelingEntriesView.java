@@ -32,15 +32,22 @@ public final class FeelingEntriesView extends LinearLayout {
     private String renderedEntries;
 
     public FeelingEntriesView(Context context,Store store,Store.Session session,Runnable changed){
+        this(context,store,session,changed,null);
+    }
+    public FeelingEntriesView(Context context,Store store,Store.Session session,Runnable changed,List<Store.FeelingEntry> initial){
         super(context);this.store=store;this.session=session;this.changed=changed;
         setOrientation(VERTICAL);
         TextView title=text("How you felt",20,INK);title.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));addView(title);
         Button add=button("Add feeling entry",true);add.setOnClickListener(v->edit(null));addView(add,buttonParams());
-        entries=new LinearLayout(context);entries.setOrientation(VERTICAL);addView(entries);refreshEntries();
+        entries=new LinearLayout(context);entries.setOrientation(VERTICAL);addView(entries);
+        if(initial==null)refreshEntries();else showEntries(initial);
     }
 
     public void refreshEntries(){
-        List<Store.FeelingEntry> saved=store.feelings(session.id);StringBuilder signature=new StringBuilder();for(Store.FeelingEntry entry:saved)signature.append(entry.id).append(':').append(entry.time).append(':').append(entry.kind).append(':').append(entry.intensity).append(';');String next=signature.toString();if(next.equals(renderedEntries))return;renderedEntries=next;entries.removeAllViews();
+        showEntries(store.feelings(session.id));
+    }
+    public void showEntries(List<Store.FeelingEntry> saved){
+        StringBuilder signature=new StringBuilder();for(Store.FeelingEntry entry:saved)signature.append(entry.id).append(':').append(entry.time).append(':').append(entry.kind).append(':').append(entry.intensity).append(';');String next=signature.toString();if(next.equals(renderedEntries))return;renderedEntries=next;entries.removeAllViews();
         if(saved.isEmpty()){TextView empty=text("No feeling entries for this night yet.",13,MUTED);empty.setPadding(0,dp(12),0,dp(3));entries.addView(empty);return;}
         for(Store.FeelingEntry entry:saved){
             Button item=button(new SimpleDateFormat("MMM d, yyyy · h:mm:ss a",Locale.US).format(new Date(entry.time))+"\n"+entry.kind+" · "+entry.intensity+" / 10",false);

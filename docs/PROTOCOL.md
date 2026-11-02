@@ -1,10 +1,50 @@
 # Breeze BLE protocol, sensor/IR capability 7
 
-> Current app boundary: Android OTA commands and UI were removed. Firmware updates now use the physical BOOT button plus the Windows `firmware/wireless-update.ps1` uploader. OTA packet details retained later in this file describe the archived compatibility implementation, not the live Android client.
+> Current app boundary: Android OTA commands and UI were removed. The controller still accepts remote BLE opcode 7/action 1 to enter OTA, followed by the Windows `firmware/wireless-update.ps1` uploader. Use that remote path; no BOOT-button action is required. Android Wi-Fi-request details later in this file describe the archived Android client.
 
 The existing GATT service and 20-byte little-endian framing are retained. Service: `689a1001-744d-4aca-89b3-028bc1fe3201`; notify/read TX: `689a1002-744d-4aca-89b3-028bc1fe3201`; write RX: `689a1003-744d-4aca-89b3-028bc1fe3201`.
 
 ## Phone commands
+
+### Daily Logic windows (firmware 1.2.22 / 1.2.23)
+
+Capability byte 15 = 1 advertises the single-window extension; 2 adds a complete
+daily schedule (firmware 1.2.23). Existing range layout
+3 and its persisted profile bytes remain unchanged. All fields below use the
+existing opcode 6 fan-command envelope and little-endian encoding.
+
+- Action 18 (`LOGIC_WINDOW`): byte 5 enabled (0/1), bytes 6–7 start minute,
+  bytes 8–9 end minute (each 0–1439), byte 10 signed level adjustment (−10…10),
+  byte 11 layout 1; bytes 12–19 zero. Enabled equal start/end is invalid.
+  This stages the window between BOOST and COMMIT. COMMIT applies both the
+  range and the window. A legacy GLOBAL/RANGE/BOOST/COMMIT clears the window.
+- Action 18 layout 2 uses the same bytes 5–10, byte 11 = 2, bytes 12–13
+  zero-based schedule segment index, bytes 14–15 total segment count (1–1440),
+  and bytes 16–19 zero. All segments must be acknowledged before COMMIT.
+  GLOBAL clears staging; missing indices, mixed layouts/counts or invalid
+  segments cannot replace the live schedule. A new GLOBAL starts a retry.
+  The phone preserves an unrestricted editable window list and sums all active
+  signed adjustments per local minute, then limits the sum to −10…10 and
+  compiles non-overlapping intervals. This preserves every possible Off–H
+  target, including cancellation between positive and negative adjustments.
+  The segment bound follows from 1440 minutes in a day, not a user window cap.
+  An empty schedule sends one disabled segment; an all-day nonzero schedule
+  is split into two intervals because equal start/end remains invalid.
+- Action 19 (`LOGIC_CLOCK`): byte 5 layout 1, bytes 6–9 UTC epoch seconds
+  (at least 1700000000), bytes 10–11 signed current UTC offset in minutes,
+  bytes 12–15 next time-zone transition epoch (zero if none), bytes 16–17
+  signed offset after that transition, bytes 18–19 zero. Offsets must be
+  within ±840 minutes. A nonzero transition cannot predate the supplied clock.
+  This updates only the schedule clock, even while sensor recording is active;
+  it does not change archive time, resume paused Logic, send IR or write NVS.
+
+Schedule and clock live in RAM and are restored by the phone after reconnect.
+The ordinary baseline/hysteresis and boost are evaluated first; the active
+combined adjustment is added once to their bounded target, then clamped to 0…10.
+Physical state synchronization must not rebase the unadjusted baseline while
+the schedule is enabled. Logic status byte 18 carries the signed effective
+combined adjustment (−10…10), or zero outside enabled windows/while paused.
+Older firmware emits zero.
 
 All commands: byte 0 = 1, byte 1 = opcode, bytes 2–3 = sequence, unused bytes zero. The phone waits for both GATT write completion and controller acknowledgement. Within a connection generation the controller caches its last eight commands; an identical sequence/payload retry returns its previous result without repeating IR. Reusing a cached sequence with different bytes returns error 1.
 
@@ -38,10 +78,27 @@ Opcode 6 actions:
 | 14 Logic rule | rule index 0 warm / 1 cool, body threshold, per-level temperature step, minimum and off-below flag |
 | 15 Logic boost | per-rule enable, extra levels, trigger/window, rise/hold/return times and curve |
 | 16 Logic commit | atomically validate/persist the complete staged profile and enable automatic control |
+| 17 Double-hit timeout | byte 5 reserved (0); bytes 6–7 unsigned idle seconds, 0–3600; 0 disables |
+
+Firmware 1.2.18 advertises double-hit configuration with capability byte 12 = 1.
+Action 17 persists the timeout independently of Logic profiles; successful changes
+cancel a pending second hit. With a nonzero timeout, the first command at or after
+that many idle seconds is followed by one full learned burst 300 ms after the
+first finishes. The estimate advances once for the pair. Zero, the default,
+disables this behavior. Configuration emits no IR, and the saved timeout survives
+phone disconnection and controller reboot. Older firmware must not receive action 17.
+
+From firmware 1.2.21 the timeout T is treated as the fan's display time, counted from
+the end of the controller's last fan burst. Before 0.875 T a command is one burst; from
+1.1 T it is the pair. In between, a manual SEND is acknowledged at once, held (type 5
+flag bit 6) and sent as the pair at 1.1 T, while TARGET and automatic steps wait without
+being cancelled. SEND, LEARN, CLEAR and the receiver test answer busy (22) while a press
+is held. Before any fan burst since boot the pair is used. The receiver test's bursts are
+not fan bursts.
 
 Firmware 1.2.7 advertises capability byte 8 bit 3 for Logic, bit 4 for D2, and byte 10 = 2 for independent-threshold configuration. The app requires that schema before uploading Logic. Global action 13 uses byte 5 probe mask; signed centi-Fahrenheit warm threshold at 6–7; averaging seconds at 8–9; full-range rise/fall seconds at 10–11/12–13; maximum speed at 14; schema at 15; signed cool threshold at 16–17. Schema 1 remains accepted with cool equal to warm. Commit requires one global, both rules and both boosts; failed validation or persistence retains the previous profile.
 
-Warm applies at/above its threshold and Cool below its threshold. In the gap, the controller holds its current estimate, cancels unfinished ramp/boost work and sends no new IR. The body average uses the maximum valid selected D0/D1/D2 reading at each 1 Hz sample. Profiles and known fan estimates survive reboot independently of learned IR slots. Manual sends/targets pause automatic control; an unknown estimate never causes a blind Power command.
+Warm applies at/above its threshold and Cool below its threshold. In the gap, the controller holds its current estimate, cancels unfinished ramp/boost work and sends no new IR. The body average uses the maximum valid selected D0/D1/D2 reading at each 1 Hz sample. Profiles and known fan estimates survive reboot independently of learned IR slots. Manual Horizontal (SEND slot 4) preserves automatic control and any pending speed target. Other manual sends/targets pause automatic control; an unknown estimate never causes a blind Power command.
 
 **Type 9 Logic status:** byte 1 flags automatic=1, boost=2, ready=4, needs sync=8, no body=16, D2 valid=32; byte 2 rule (0 warm, 1 cool, 255 gap/unavailable); byte 3 target (0 Off); 4–5 averaged body centi-Fahrenheit; 6–7 room centi-Fahrenheit; 8–9 remaining boost seconds; 10–11 revision; 12 error; 13 selected probe mask; 14–15 signed D2 centi-Celsius; 19 = 1. Missing body and D2 values are identified by their flags.
 
@@ -49,13 +106,13 @@ Slots 0–5 are Power, Speed +, Speed -, Mode, Horizontal, Vertical; 6–11 are 
 
 ## Controller notifications
 
-**Type 4 capability:** byte 0 = 4; bytes 1–3 reserved; byte 4 = sensor/IR capability 7; bytes 5–7 firmware major/minor/patch. Byte 8 feature flags: bit 0 Wi-Fi OTA, bit 1 receiver test, bit 2 receiver input, bit 3 Logic, bit 4 D2/type-10 records, bit 5 fan-setting/type-11 records, bit 6 advertised telemetry cadence. Byte 9 bit 0 identifies a running image pending rollback health confirmation. Byte 10 is Logic configuration schema (2). With bit 6 set, byte 11 declares full periodic telemetry seconds (1–60); firmware 1.2.11 advertises 10. Other bytes remain reserved. Clients fall back to the legacy one-second cadence when its feature flag or a valid interval is absent.
+**Type 4 capability:** byte 0 = 4; bytes 1–3 reserved; byte 4 = sensor/IR capability 7; bytes 5–7 firmware major/minor/patch. Byte 8 feature flags: bit 0 Wi-Fi OTA, bit 1 receiver test, bit 2 receiver input, bit 3 Logic, bit 4 D2/type-10 records, bit 5 fan-setting/type-11 records, bit 6 advertised telemetry cadence. Byte 9 bit 0 identifies a running image pending rollback health confirmation. Byte 10 is Logic configuration schema (3 in current firmware). With bit 6 set, byte 11 declares full periodic telemetry seconds (1–60); firmware 1.2.11 and later advertise 10. Byte 12 = 1 advertises double-hit timeout configuration (action 17), added in firmware 1.2.18; zero means unsupported. From firmware 1.2.19, byte 13 = 1 while the hardware timer owns the IR LED, and byte 14 counts bursts since boot that had to fall back to software timing (saturating at 255); both are zero on earlier firmware. Other bytes remain reserved. Clients fall back to the legacy one-second cadence when its feature flag or a valid interval is absent.
 
 Firmware 1.2.11 retains one-second internal body sampling and ten-second durable recording, while full live Bluetooth bundles run every ten seconds. Command responses stay immediate with type 1 ACK first. Meaningful fan/Logic status changes are sent separately; ordinary temperature changes do not trigger these event packets. Receiver diagnostics are limited to once per second, except prompt terminal test results. Android uses a 25-second freshness window and 30-second link watchdog for the ten-second cadence, preserving legacy six/fifteen-second limits and the six-second command timeout. The 120-second visibility grace remains independent of these timers.
 
 **Type 1 live sensors / acknowledgement:** byte 0 = 1; byte 1 flags (bit 0 recording, bit 1 D2 valid, bit 3 D0 valid, bit 4 SHT temperature valid, bit 5 humidity valid, bit 6 active storage, bit 7 storage available); bytes 2–3 telemetry sequence; 4–5 D0 signed Celsius ×100; 6–7 SHT temperature signed Celsius ×100; 8–9 RH percent ×100; 10–11 D2 signed Celsius ×100; 12–15 uptime seconds; 16–17 acknowledged command sequence; 18 sensor/storage error; 19 command result. Missing values are identified by flags, not a zero temperature. D2 is decoded only after capability byte 8 bit 4 advertises support. Older sensor firmware leaves these fields unused; legacy motor firmware used them for mode/speed/angle, which must not become a D2 reading. Freshness uses the advertised cadence described above.
 
-**Type 5 D1 / IR status:** byte 0 = 5; byte 1 flags (bit 0 D1 valid, bit 1 automatic, bit 2 synchronized estimate, bit 3 verification flag, bit 4 Normal mode confirmed, bit 5 target in progress); 2–3 D1 signed Celsius ×100; 4 estimated speed (0 Off when synchronized, otherwise unknown); 5 queued target (0 none); 6 learning slot (255 none); 7 learning state (0 idle, 1 waiting, 2 saved, 3 timeout, 4 canceled, 5 failed); 8–9 learned-slot mask; 10 IR error; 11 highest valid probe index (0 unavailable, 1 D0, 2 D1, 3 D2); 12–13 that raw temperature ×100; 14 result slot (255 none); 15 last sent slot (255 none); 16–17 transmit count; 18 user test stage; 19 = 7. Type 9 reports the separate rolling average used by automatic control.
+**Type 5 D1 / IR status:** byte 0 = 5; byte 1 flags (bit 0 D1 valid, bit 1 automatic, bit 2 synchronized estimate, bit 3 verification flag, bit 4 Normal mode confirmed, bit 5 target in progress, bit 6 a manual press held until the fan's display is certainly dark, firmware 1.2.21 on); 2–3 D1 signed Celsius ×100; 4 estimated speed (0 Off when synchronized, otherwise unknown); 5 queued target (0 none); 6 learning slot (255 none); 7 learning state (0 idle, 1 waiting, 2 saved, 3 timeout, 4 canceled, 5 failed); 8–9 learned-slot mask; 10 IR error; 11 highest valid probe index (0 unavailable, 1 D0, 2 D1, 3 D2); 12–13 that raw temperature ×100; 14 result slot (255 none); 15 last sent slot (255 none); 16–17 transmit count; 18 user test stage; 19 = 7. Type 9 reports the separate rolling average used by automatic control.
 
 **Type 7 OTA status:** all integer fields are little-endian.
 

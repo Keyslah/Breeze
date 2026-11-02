@@ -6,6 +6,10 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.os.SystemClock;
 import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.CheckBox;
+import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -19,10 +23,10 @@ final class FanSettingGraphChecks {
     private final float density;
     private long eventTime=SystemClock.uptimeMillis();
     private FanSettingGraphChecks(Context context){this.context=context;density=context.getResources().getDisplayMetrics().density;}
-    static void run(Context context){FanSettingGraphChecks checks=new FanSettingGraphChecks(context);checks.stepsAndReadings();checks.visibleBoundaryAndFeelings();checks.migration();}
+    static void run(Context context){FanSettingGraphChecks checks=new FanSettingGraphChecks(context);checks.defaultReadings();checks.stepsAndReadings();checks.visibleBoundaryAndFeelings();checks.migration();}
     private int px(float value){return Math.round(value*density);}
     private static void check(boolean valid,String message){if(!valid)throw new AssertionError(message);}
-    private static Store.Point sample(int seconds,double setting){Store.Point point=new Store.Point(START+seconds*1000,32,24,50,0);point.secondProbe=31;point.fanSetting=setting;return point;}
+    private static Store.Point sample(int seconds,double setting){Store.Point point=new Store.Point(START+seconds*1000,36,24,50,0);point.secondProbe=35;point.fanSetting=setting;return point;}
     private GraphView graph(){GraphView graph=new GraphView(context);graph.layout(0,0,px(360),px(346));return graph;}
     private void tap(GraphView graph,float x,float y){
         long down=eventTime+=800;MotionEvent start=MotionEvent.obtain(down,down,MotionEvent.ACTION_DOWN,x,y,0),end=MotionEvent.obtain(down,down+20,MotionEvent.ACTION_UP,x,y,0);
@@ -33,6 +37,43 @@ final class FanSettingGraphChecks {
         for(int yy=Math.max(0,Math.round(y)-px(1));yy<=Math.min(image.getHeight()-1,Math.round(y)+px(1));yy++)
             for(int xx=Math.max(0,Math.round(x)-px(1));xx<=Math.min(image.getWidth()-1,Math.round(x)+px(1));xx++)if(image.getPixel(xx,yy)==color)return true;
         return false;
+    }
+    private static TextView readout(View view,int series){
+        if(view instanceof CheckBox&&GraphView.LABELS[series].contentEquals(((CheckBox)view).getText()))return (TextView)((ViewGroup)view.getParent()).getChildAt(1);
+        if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int index=0;index<group.getChildCount();index++){TextView value=readout(group.getChildAt(index),series);if(value!=null)return value;}}
+        return null;
+    }
+    private static void emptyReadouts(GraphReadingDetailsView panel){
+        for(int series=0;series<GraphView.LABELS.length;series++){TextView value=readout(panel,series);check(value!=null&&"—".contentEquals(value.getText()),"No selected or visible sample shows a dash for "+GraphView.LABELS[series]+", not a fabricated reading");}
+    }
+    private static void fanReadout(GraphView.ReadingDetails details,GraphReadingDetailsView panel,int seconds,String expected,String message){
+        check(details!=null&&details.time==START+seconds*1000L&&details.values.get(GraphView.FAN_SETTING_SERIES).value.equals(expected),message);
+        TextView displayed=readout(panel,GraphView.FAN_SETTING_SERIES);check(displayed!=null&&expected.contentEquals(displayed.getText()),message+" in the actual readout panel");
+    }
+    private static void window(GraphView graph,int seconds,int spanSeconds){
+        try{Method setWindow=GraphView.class.getDeclaredMethod("setWindow",double.class,double.class);setWindow.setAccessible(true);setWindow.invoke(graph,(double)(START+seconds*1000L),spanSeconds*1000d);}catch(ReflectiveOperationException error){throw new AssertionError(error);}
+    }
+    private void defaultReadings(){
+        int fan=1<<GraphView.FAN_SETTING_SERIES;GraphView graph=graph();GraphReadingDetailsView panel=new GraphReadingDetailsView(context);
+        emptyReadouts(panel);GraphView.ReadingDetails[] reading={null};graph.setReadingDetailsListener(value->{reading[0]=value;panel.showReading(value);});
+        graph.data(95,List.of(sample(0,3),sample(60,7)),List.of(),false,fan);
+        fanReadout(reading[0],panel,60,"7","Opening a graph shows the newest recorded fan setting without a tap");
+        graph.data(95,List.of(sample(0,3),sample(60,7),sample(120,8)),List.of(),false,fan);
+        fanReadout(reading[0],panel,120,"8","A default readout follows a newly appended sample");
+        tap(graph,graph.feelingX(START),graph.fanSettingY(3));
+        fanReadout(reading[0],panel,0,"3","A tap explicitly inspects the older recorded sample");
+        graph.data(95,List.of(sample(0,3),sample(60,7),sample(120,8),sample(180,9)),List.of(),false,fan);
+        fanReadout(reading[0],panel,0,"3","Appending data preserves an explicitly tapped older sample");
+        graph.data(96,List.of(sample(0,7),sample(60,Double.NaN)),List.of(),false,fan);
+        fanReadout(reading[0],panel,60,"Unknown","Changing sessions defaults to its newest sample and never searches backward past a genuine Unknown");
+        graph.data(96,List.of(),List.of(),false,fan);check(reading[0]==null,"An empty recording clears the previous selected readout");emptyReadouts(panel);
+        List<Store.Point> points=List.of(sample(0,7),sample(60,3),sample(90,4),sample(120,5),sample(240,10));
+        graph.data(97,points,List.of(),false,fan);fanReadout(reading[0],panel,240,"H","Another session starts at its latest recorded sample");
+        tap(graph,graph.feelingX(START),graph.fanSettingY(7));fanReadout(reading[0],panel,0,"7","Viewport fixture begins with an explicit old selection");
+        window(graph,60,60);fanReadout(reading[0],panel,120,"5","Panning the selected sample out defaults to the newest sample within the visible window");
+        graph.data(97,List.of(sample(0,7),sample(60,3),sample(90,4),sample(120,5),sample(240,10),sample(300,9)),List.of(),false,fan);
+        fanReadout(reading[0],panel,120,"5","A zoomed default readout stays on the latest visible sample instead of following an offscreen append");
+        window(graph,150,60);check(reading[0]==null,"A viewport with no recorded samples cannot present an offscreen value as current");emptyReadouts(panel);
     }
     private void stepsAndReadings(){
         int fan=1<<GraphView.FAN_SETTING_SERIES,color=GraphView.COLORS[GraphView.FAN_SETTING_SERIES];GraphView graph=graph();

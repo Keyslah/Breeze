@@ -5,6 +5,45 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.Assert.*;
 
 public class UiConnectionStateTest {
+    @Test public void existingRecordingListenerRetainsLockedConnectionWithoutDreo(){
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setVisible(true);long session=state.generation();state.setListening(true);state.setVisible(false);
+        clock.addAndGet(3600000);assertTrue(state.allows(session));assertFalse(state.requestStart(true));
+        state.setVisible(true);assertEquals(session,state.generation());state.setVisible(false);
+        clock.addAndGet(120001);state.setListening(false);assertFalse(state.allows(session));
+    }
+    @Test public void listeningCannotCreateHiddenSessionOrOverrideExplicitDisconnect(){
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setListening(true);assertFalse(state.allows(state.generation()));
+        state.setVisible(true);state.setListening(true);long old=state.generation();state.setVisible(false);state.disconnect();
+        state.setListening(true);assertFalse(state.allows(old));assertFalse(state.allows(state.generation()));
+    }
+    @Test public void expiredBackgroundSessionCannotBeAdoptedByListener(){
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setVisible(true);long session=state.generation();state.setVisible(false);clock.addAndGet(120001);
+        state.setListening(true);assertFalse(state.allows(session));
+    }
+    @Test public void configuredSynchronizationRetainsVisibleSessionAfterLock() {
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setVisible(true);long session=state.generation();state.setSynchronizing(true);state.setVisible(false);
+        clock.addAndGet(3600000);assertTrue(state.allows(session));assertFalse(state.requestStart(true));
+        state.setVisible(true);assertEquals(session,state.generation());
+    }
+
+    @Test public void synchronizationCannotStartHiddenOrOverrideDisconnect() {
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setSynchronizing(true);assertFalse(state.allows(state.generation()));
+        state.setVisible(true);state.setSynchronizing(true);long session=state.generation();
+        state.setVisible(false);state.disconnect();state.setSynchronizing(true);
+        assertFalse(state.allows(session));assertFalse(state.allows(state.generation()));
+    }
+
+    @Test public void disablingSynchronizationRestoresExistingGraceDeadline() {
+        AtomicLong clock=new AtomicLong(1000);UiConnectionState state=new UiConnectionState(clock::get);
+        state.setVisible(true);long session=state.generation();state.setSynchronizing(true);state.setVisible(false);
+        clock.addAndGet(120001);state.setSynchronizing(false);assertFalse(state.allows(session));
+    }
+
     @Test public void hiddenStartsAreRejectedEvenWhenExplicit() {
         AtomicLong clock = new AtomicLong(1000);
         UiConnectionState state = new UiConnectionState(clock::get);
