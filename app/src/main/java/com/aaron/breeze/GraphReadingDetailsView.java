@@ -21,7 +21,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
     private final TextView feeling,note;
     private final LinearLayout rows;
     private final List<ReadingCell> cells=new ArrayList<>();
-    private int columns=1;
+    private static final int columns=4;
     private int visibleSeries=GraphView.DEFAULT_SERIES;
     private boolean syncingSeries;
     private SeriesChangedListener seriesChangedListener;
@@ -47,7 +47,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
         for(int series=0;series<cells.size();series++){
             String value=details!=null&&series<details.values.size()?details.values.get(series).value:emptyValue(series);
             if(!value.contentEquals(cells.get(series).value.getText()))cells.get(series).value.setText(value);
-            String label=details!=null&&series<details.values.size()?details.values.get(series).label:GraphView.LABELS[series];
+            String label=shortLabel(series);
             if(!label.contentEquals(cells.get(series).label.getText())){cells.get(series).label.setText(label);cells.get(series).label.setContentDescription(label+" trace");}
         }
         String message=details==null?"":details.note;
@@ -57,13 +57,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
         if(rating!=null){String messageFeeling=rating.label+" · "+rating.value;if(!messageFeeling.contentEquals(feeling.getText()))feeling.setText(messageFeeling);feeling.setTextColor(rating.color);}
     }
 
-    @Override protected void onMeasure(int widthMeasureSpec,int heightMeasureSpec){
-        int available=MeasureSpec.getSize(widthMeasureSpec)-getPaddingLeft()-getPaddingRight();
-        float minimum=dp(140);for(ReadingCell cell:cells)minimum=Math.max(minimum,cell.minimumWidth());
-        int desired=cells.size()>1&&MeasureSpec.getMode(widthMeasureSpec)!=MeasureSpec.UNSPECIFIED&&available>=minimum*2+dp(12)?2:1;
-        if(columns!=desired){columns=desired;rebuildRows();}
-        super.onMeasure(widthMeasureSpec,heightMeasureSpec);
-    }
+    private static String shortLabel(int series){return switch(series){case GraphView.HIGHEST_BODY_SERIES->"body";case 2->"room";case GraphView.FAN_SETTING_SERIES->"fan";case GraphView.DREO_TEMPERATURE_SERIES->"dreo";default->GraphView.LABELS[series];};}
 
     private void rebuildRows(){
         for(ReadingCell cell:cells)if(cell.getParent() instanceof ViewGroup)((ViewGroup)cell.getParent()).removeView(cell);
@@ -73,7 +67,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
             for(int column=0;column<columns;column++){
                 int at=index+column;View cell=at<group.length?cells.get(group[at]):new View(getContext());
                 LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,LayoutParams.WRAP_CONTENT,1);
-                if(column<columns-1)params.setMarginEnd(dp(12));row.addView(cell,params);
+                if(column<columns-1)params.setMarginEnd(dp(4));row.addView(cell,params);
             }
             rows.addView(row,wrap());
         }
@@ -83,7 +77,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
         final CheckBox label;final TextView value;
         ReadingCell(int series){
             super(GraphReadingDetailsView.this.getContext());setOrientation(VERTICAL);setPadding(dp(2),0,dp(2),dp(2));
-            label=new CheckBox(getContext());label.setTag("historySeries"+series);label.setText(GraphView.LABELS[series]);label.setTextSize(16);label.setTextColor(GraphView.COLORS[series]);
+            label=new CheckBox(getContext());label.setTag("historySeries"+series);label.setText(shortLabel(series));label.setTextSize(13);label.setMaxLines(3);label.setTextColor(GraphView.COLORS[series]);
             label.setButtonTintList(ColorStateList.valueOf(GraphView.COLORS[series]));label.setMinWidth(0);label.setMinimumWidth(0);label.setMinHeight(dp(48));label.setMinimumHeight(dp(48));
             label.setPadding(0,0,0,0);label.setGravity(Gravity.CENTER_VERTICAL|Gravity.START);label.setContentDescription(GraphView.LABELS[series]+" trace");label.setChecked((visibleSeries&(1<<series))!=0);
             label.setOnCheckedChangeListener((button,checked)->{
@@ -91,15 +85,10 @@ public final class GraphReadingDetailsView extends LinearLayout {
                 visibleSeries=checked?visibleSeries|(1<<series):visibleSeries&~(1<<series);
                 if(seriesChangedListener!=null)seriesChangedListener.onSeriesChanged(series,checked);
             });
-            value=text(emptyValue(series),26,GraphView.COLORS[series]);value.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-            value.setPadding(label.getCompoundPaddingLeft(),0,0,0);
+            value=text(emptyValue(series),22,GraphView.COLORS[series]);value.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));value.setSingleLine(true);
+            value.setAutoSizeTextTypeUniformWithConfiguration(12,22,1,android.util.TypedValue.COMPLEX_UNIT_SP);
+            value.setPadding(0,0,0,0);
             addView(label,wrap());addView(value,wrap());
-        }
-        float minimumWidth(){
-            float word=0;for(String part:label.getText().toString().split(" "))word=Math.max(word,label.getPaint().measureText(part));
-            float labelWidth=word+label.getCompoundPaddingLeft()+label.getCompoundPaddingRight();
-            float valueWidth=Math.max(value.getPaint().measureText("100.0°F"),value.getPaint().measureText("Unknown"))+value.getPaddingLeft()+value.getPaddingRight();
-            return Math.max(labelWidth,valueWidth)+getPaddingLeft()+getPaddingRight()+dp(4);
         }
     }
     private String emptyValue(int series){return "—";}

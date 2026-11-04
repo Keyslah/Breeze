@@ -64,27 +64,45 @@ final class OuraHistoryChecks {
         float density=context.getResources().getDisplayMetrics().density;int width=Math.round(360*density);
         GraphView graph=new GraphView(context);graph.layout(0,0,width,Math.round(346*density));
         graph.data(1,List.of(new Store.Point(START,36.5,22,50,0),new Store.Point(END,36.7,23,51,0)),List.of(),true,1<<GraphView.HIGHEST_BODY_SERIES);
-        float bottom=graph.fanSettingY(0);
+        float plotHeight=graph.fanSettingY(0)-graph.fanSettingY(FanSetting.MAX);
         Method window=GraphView.class.getDeclaredMethod("setWindow",double.class,double.class);window.setAccessible(true);window.invoke(graph,(double)START,1200000d);
         double oldStart=graph.visibleStartTime(),oldEnd=graph.visibleEndTime();
         double[] temperature=graph.visibleTemperatureRangeC();
         graph.oura(List.of(period),OuraData.ALL,START,END);int height=Math.round((346+graph.ouraHeightDp())*density);graph.layout(0,0,width,height);
         check(graph.visibleStartTime()==oldStart&&graph.visibleEndTime()==oldEnd,"Oura import preserves zoom and pan");
-        check(Math.abs(graph.fanSettingY(0)-bottom)<1,"Extra Oura rows preserve original sensor plot height");
+        check(Math.abs(graph.fanSettingY(0)-graph.fanSettingY(FanSetting.MAX)-plotHeight)<1,"Summaries and sleep band preserve original sensor plot height");
         check(java.util.Arrays.equals(temperature,graph.visibleTemperatureRangeC()),"BPM and temperature deviations never alter body-temperature scale");
         Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);graph.draw(new Canvas(bitmap));
         // A flat HR fixture makes a bridged null sample detectable at the midpoint.
-        int hrY=Math.round((346+28+24+32)*density);
-        int gapX=Math.round(36*density+(width-72*density)*0.5f),validX=Math.round(36*density+(width-72*density)*0.125f);
-        check((bitmap.getPixel(validX,hrY)&0xffffff)==(OuraPlot.HEART_COLOR&0xffffff),"Real adjacent samples draw HR line");
+        int hrY=Math.round((graph.fanSettingY(0)+graph.fanSettingY(FanSetting.MAX))/2);
+        int gapX=Math.round(graph.feelingX(START+600000)),validX=Math.round(graph.feelingX(START+150000));
+        check((bitmap.getPixel(validX,hrY)&0xffffff)==(OuraPlot.HEART_COLOR&0xffffff),"BPM overlays the original sensor plot rectangle");
         check((bitmap.getPixel(gapX,hrY)&0xffffff)!=(OuraPlot.HEART_COLOR&0xffffff),"Null HR sample is a drawn gap");
-        int stageY=Math.round((346+28+106+28)*density);
+        int stageY=Math.round(graph.feelingY(-10)+12*density);
         check((bitmap.getPixel(validX,stageY)&0xffffff)==(OuraPlot.STAGE_COLORS[1]&0xffffff),"Stage uses returned five-minute bins");
         int gapPixel=bitmap.getPixel(gapX,stageY)&0xffffff;
         for(int color:OuraPlot.STAGE_COLORS)if(color!=0)check(gapPixel!=(color&0xffffff),"Unknown stage remains a gap");
         bitmap.recycle();
+        graph.oura(List.of(period),OuraData.HEART,START,END);graph.layout(0,0,width,Math.round(346*density));
+        check(graph.ouraHeightDp()==0,"BPM never adds a separate graph or extra height");
+        graph.oura(List.of(period,period),OuraData.HEART|OuraData.STAGES,START,END);
+        check(graph.ouraHeightDp()==40,"Multiple sleep periods share one BPM scale and one sleep band");
         graph.oura(List.of(period),0,START,END);graph.layout(0,0,width,Math.round(346*density));
         check(graph.ouraHeightDp()==0&&graph.visibleStartTime()==oldStart&&graph.visibleEndTime()==oldEnd,"Hiding Oura preserves viewport");
         check(new GraphView.ReadingDetails(START,List.of(),"").timestamp.contains("CDT"),"Readout uses Central DST regardless of device zone");
+        preview(context,period);
+    }
+    private static void preview(Context context,OuraData.Period period)throws Exception{
+        float density=context.getResources().getDisplayMetrics().density;int width=Math.round(400*density);
+        android.widget.LinearLayout panel=new android.widget.LinearLayout(context);panel.setOrientation(android.widget.LinearLayout.VERTICAL);panel.setBackgroundColor(0xff20352b);
+        GraphView graph=new GraphView(context);java.util.ArrayList<Store.Point> readings=new java.util.ArrayList<>();
+        for(int second=0;second<=1200;second+=10){Store.Point p=new Store.Point(START+second*1000L,36.5+0.08*Math.sin(second/90.0),22+0.2*Math.sin(second/180.0),50,0);p.fanSetting=second<600?4:3;readings.add(p);}
+        graph.data(1,readings,List.of(),true,(1<<6)|(1<<2)|(1<<8));graph.oura(List.of(period),OuraData.ALL,START,END);
+        panel.addView(graph,new android.widget.LinearLayout.LayoutParams(-1,Math.round((346+graph.ouraHeightDp())*density)));
+        GraphReadingDetailsView details=new GraphReadingDetailsView(context);details.setVisibleSeries((1<<6)|(1<<2)|(1<<8));graph.setReadingDetailsListener(details::showReading);panel.addView(details,new android.widget.LinearLayout.LayoutParams(-1,-2));
+        OuraHistoryView oura=new OuraHistoryView(context,OuraData.ALL,mask->{});oura.data(new OuraData.Cache(true,START,List.of(period)));panel.addView(oura,new android.widget.LinearLayout.LayoutParams(-1,-2));
+        panel.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED));panel.layout(0,0,width,panel.getMeasuredHeight());
+        Bitmap image=Bitmap.createBitmap(width,panel.getMeasuredHeight(),Bitmap.Config.ARGB_8888);panel.draw(new Canvas(image));
+        try(java.io.FileOutputStream output=new java.io.FileOutputStream(new java.io.File(context.getCacheDir(),"oura-combined-preview.png"))){check(image.compress(Bitmap.CompressFormat.PNG,100,output),"Write offscreen preview");}finally{image.recycle();}
     }
 }

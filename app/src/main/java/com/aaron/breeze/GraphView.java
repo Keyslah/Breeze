@@ -52,7 +52,7 @@ public class GraphView extends View {
     public void setReadingDetailsListener(ReadingDetailsListener listener){readingDetailsListener=listener;notifyReadingDetails();}
     public GraphView(Context c){
         super(c);setLayerType(View.LAYER_TYPE_SOFTWARE,null);
-        setContentDescription("Recorded body temperatures use the right axis. Room, outdoor and optional Dreo fan temperatures use an independent ambient temperature axis on the left. Fan setting maps Off at the bottom to H at the top; humidity maps 0 percent at the bottom to 100 percent at the top. These scales do not change the body temperature range. All readings share actual timestamps. Pinch to zoom, drag sideways to pan, tap to inspect a reading, or double-tap to show the whole night.");
+        setContentDescription("Recorded body temperatures use the right axis. Room, outdoor and optional Dreo fan temperatures use an independent ambient temperature axis on the left. Fan setting maps Off at the bottom to H at the top; humidity maps 0 percent at the bottom to 100 percent at the top. These scales do not change the body temperature range. Oura BPM overlays the same plot using its own far-right axis. The sleep band shares the time axis; temperature deviation and respiratory rate remain labeled summaries. All readings share actual timestamps. Pinch to zoom, drag sideways to pan, tap to inspect a reading, or double-tap to show the whole night.");
         touchSlop=ViewConfiguration.get(c).getScaledTouchSlop();
         scale=new ScaleGestureDetector(c,new ScaleGestureDetector.SimpleOnScaleGestureListener(){
             @Override public boolean onScaleBegin(ScaleGestureDetector detector){
@@ -116,10 +116,13 @@ public class GraphView extends View {
     private double fullSpan(){return fullEnd()-fullStart();}
     private double windowSpan(){return windowEnd-windowStart;}
     private float plotLeft(){return dp(36);}
-    private float plotRight(){return getWidth()-dp(36);}
-    private float chartBottom(){return getHeight()-dp(26+ouraHeightDp());}
+    private boolean bpmAxis(){return !ouraPeriods.isEmpty()&&(ouraMask&OuraData.HEART)!=0;}
+    private float plotRight(){return getWidth()-dp(36+(bpmAxis()?32:0));}
+    private float bodyAxisRight(){return getWidth()-dp(1+(bpmAxis()?32:0));}
+    private float plotTop(){return dp(30+OuraPlot.summaryHeightDp(ouraPeriods,ouraMask));}
+    private float chartBottom(){return getHeight()-dp(26+OuraPlot.sleepHeightDp(ouraPeriods,ouraMask));}
     private float sensorBottom(){return chartBottom()-(feelings.isEmpty()?0:dp(120));}
-    float fanSettingY(double setting){return sensorBottom()-(sensorBottom()-dp(30))*(float)setting/FanSetting.MAX;}
+    float fanSettingY(double setting){return sensorBottom()-(sensorBottom()-plotTop())*(float)setting/FanSetting.MAX;}
     private float feelingTop(){return chartBottom()-dp(80);}
     float feelingX(long time){return plotLeft()+(plotRight()-plotLeft())*(float)((time-windowStart)/windowSpan());}
     float feelingY(int signedValue){return chartBottom()-(chartBottom()-feelingTop())*(signedValue+10)/20f;}
@@ -274,30 +277,35 @@ public class GraphView extends View {
     String temperatureTickLabel(double c){double[] range=visibleTemperatureRangeC();return temperatureTickLabel(c,(range[1]-range[0])*(fahrenheit?1.8:1)/4);}
     private String temperatureTickLabel(double c,double tickStep){int decimals=tickStep<0.1?2:tickStep<1?1:0;return String.format(Locale.US,"%."+decimals+"f",(double)unit(c));}
     @Override protected void onDraw(Canvas c){
-        super.onDraw(c);float l=plotLeft(),r=plotRight(),top=dp(30),bottom=sensorBottom(),footer=chartBottom();
+        super.onDraw(c);float l=plotLeft(),r=plotRight(),top=plotTop(),bottom=sensorBottom(),footer=chartBottom();
         if(!hasTimeline()){text(c,"No readings downloaded for this night.",dp(4),dp(70),INK,13);return;}
         double start=windowStart,end=windowEnd;boolean body=!points.isEmpty()&&(visible&BODY_TEMPERATURE_SERIES)!=0,ambient=(visible&AMBIENT_TEMPERATURE_SERIES)!=0,humidity=!points.isEmpty()&&(visible&48)!=0;
         double[] temperatureRange=temperatureRangeC(BODY_TEMPERATURE_SERIES),ambientRange=visibleAmbientTemperatureRangeC();
         float min=unit(temperatureRange[0]),max=unit(temperatureRange[1]),ambientMin=unit(ambientRange[0]),ambientMax=unit(ambientRange[1]);
         String units=fahrenheit?"°F":"°C";
-        if(body)rightText(c,"Body "+units,getWidth()-dp(1),dp(13),INK,10);
+        if(body)rightText(c,"Body "+units,bodyAxisRight(),dp(13),INK,10);
         if(ambient)text(c,"Ambient "+units,dp(1),dp(13),COLORS[2],10);
         else if(humidity)text(c,"% RH",dp(1),dp(13),COLORS[4],10);
         if(enabled(FAN_SETTING_SERIES))text(c,"Fan 0–H",l,dp(26),COLORS[FAN_SETTING_SERIES],10);
         if(humidity)rightText(c,"Humidity 0–100%",r,dp(26),COLORS[4],10);
         for(int i=0;!points.isEmpty()&&i<=4;i++){
             float y=bottom-(bottom-top)*i/4;paint.setColor(0xff374e3f);paint.setStrokeWidth(dp(1));c.drawLine(l,y,r,y,paint);
-            if(body)rightText(c,temperatureTickLabel(temperatureRange[0]+(temperatureRange[1]-temperatureRange[0])*i/4,(max-min)/4),getWidth()-dp(1),y+dp(4),MUTED,10);
+            if(body)rightText(c,temperatureTickLabel(temperatureRange[0]+(temperatureRange[1]-temperatureRange[0])*i/4,(max-min)/4),bodyAxisRight(),y+dp(4),MUTED,10);
             if(ambient)text(c,temperatureTickLabel(ambientRange[0]+(ambientRange[1]-ambientRange[0])*i/4,(ambientMax-ambientMin)/4),dp(1),y+dp(4),COLORS[2],10);
             else if(humidity)text(c,""+(i*25),dp(1),y+dp(4),COLORS[4],10);
         }
         for(int series=0;series<LABELS.length;series++)if(enabled(series)&&series!=FAN_SETTING_SERIES)line(c,series,start,end,isHumidity(series)?0:isAmbient(series)?ambientMin:min,isHumidity(series)?100:isAmbient(series)?ambientMax:max,l,r,top,bottom);
-        if(points.isEmpty())text(c,"No sensor readings downloaded yet.",l,top+dp(30),MUTED,12);
-        else if(visible==0)text(c,"Check a reading below to show it.",l,top+dp(30),MUTED,12);
+        if(points.isEmpty()&&ouraPeriods.isEmpty())text(c,"No sensor readings downloaded yet.",l,top+dp(30),MUTED,12);
+        else if(visible==0&&ouraMask==0)text(c,"Check a reading below to show it.",l,top+dp(30),MUTED,12);
         int previousPhase=0;for(Store.Point point:points){if(point.phase!=0&&point.phase!=previousPhase&&point.time>=start&&point.time<=end){float x=l+(r-l)*(float)((point.time-start)/(end-start));paint.setColor(0xff8ea596);paint.setStrokeWidth(dp(1));c.drawLine(x,top,x,bottom,paint);String label=point.phase==1?"Baseline":point.phase==2?"On":"Off";text(c,label,Math.min(x+dp(3),r-dp(38)),top+dp(12),0xffd3dfd4,9);}previousPhase=point.phase;}
         fanLine(c,l,r,top,bottom,humidity||ambient);feelingMarkers(c,l,r,top,bottom);
+        OuraPlot.X ouraX=time->l+(r-l)*(float)((time-windowStart)/windowSpan());
+        float density=getResources().getDisplayMetrics().density;
+        OuraPlot.summaries(c,ouraPeriods,ouraMask,dp(30),getWidth(),density);
+        OuraPlot.heart(c,ouraPeriods,ouraMask,l,r,top,bottom,getWidth()-dp(1),density,ouraX);
+        OuraPlot.sleep(c,ouraPeriods,ouraMask,footer,l,r,density,ouraX);
+        footer+=dp(OuraPlot.sleepHeightDp(ouraPeriods,ouraMask));
         SimpleDateFormat tf=new SimpleDateFormat(end-start<=120000?"h:mm:ss a z":"h:mm a z",Locale.US);tf.setTimeZone(TimeZone.getTimeZone("America/Chicago"));text(c,tf.format(new Date((long)start)),l,footer+dp(18),MUTED,10);String et=tf.format(new Date((long)end));paint.setTextSize(dp(10));text(c,et,r-paint.measureText(et),footer+dp(18),MUTED,10);
-        OuraPlot.draw(c,ouraPeriods,ouraMask,footer+dp(26),l,r,getResources().getDisplayMetrics().density,time->l+(r-l)*(float)((time-windowStart)/windowSpan()));
         if(selected>=0){
             Store.Point p=points.get(selected);float x=l+(r-l)*(float)((p.time-start)/(end-start));paint.setColor(INK);paint.setStrokeWidth(dp(1));c.save();c.clipRect(l,top,r,bottom);c.drawLine(x,top,x,bottom,paint);c.restore();
         }

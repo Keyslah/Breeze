@@ -46,6 +46,12 @@ final class GraphAxesChecks {
             List<CheckBox> controls=new ArrayList<>();collect(panel,controls);int[] expected={6,2,8,9,3,5,4,0,1,7};
             check(controls.size()==expected.length,"All ten readings remain available");
             for(int at=0;at<expected.length;at++)check(controls.get(at).getTag().equals("historySeries"+expected[at]),"Primary readings precede secondary readings at width "+width+"dp");
+            String[] shortNames={"body","room","fan","dreo"};
+            android.view.ViewParent primary=controls.get(0).getParent().getParent();
+            for(int at=0;at<4;at++){
+                check(controls.get(at).getText().toString().equals(shortNames[at]),"Primary label is concise: "+shortNames[at]);
+                check(controls.get(at).getParent().getParent()==primary,"The existing first four readings share one row at "+width+"dp");
+            }
             check(!controls.get(3).isChecked(),"New Dreo trace is off by default");
             final int[] selected={-1};panel.setOnSeriesChangedListener((series,checked)->selected[0]=series);controls.get(0).performClick();
             check(selected[0]==GraphView.HIGHEST_BODY_SERIES,"Display reordering preserves persisted series identity");
