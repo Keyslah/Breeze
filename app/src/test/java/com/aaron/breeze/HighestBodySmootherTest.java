@@ -5,6 +5,18 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class HighestBodySmootherTest {
+    @Test public void independentWindowsControlTheAmountOfAveraging(){
+        long[] times={0,30000,60000,90000,120000};double[] values={20,20,40,20,20};
+        assertEquals(80d/3,HighestBodySmoother.smooth(times,values,null,30000,65000).valueAt(2),0.000001);
+        assertEquals(24,HighestBodySmoother.smooth(times,values,null,60000,65000).valueAt(2),0);
+        assertArrayEquals(new double[]{20,20,40,20,20},values,0);
+    }
+    @Test public void roomCadenceMissingReadingsAndSleepGroupsStaySeparate(){
+        long[] times={0,60000,120000,180000,240000};double[] values={20,24,Double.NaN,30,34};
+        values(HighestBodySmoother.smooth(times,values,null,600000,65000),22,22,Double.NaN,32,32);
+        values(HighestBodySmoother.smooth(new long[]{0,10000,20000,30000},new double[]{20,20,30,30},new int[]{0,0,1,1},600000,65000),20,20,30,30);
+        values(HighestBodySmoother.smooth(new long[]{0,66000},new double[]{20,30},null,600000,65000),20,30);
+    }
     private static long[] seconds(long... seconds){long[] times=seconds.clone();for(int i=0;i<times.length;i++)times[i]*=1000;return times;}
     private static void values(HighestBodySmoother.Result result,double... expected){
         assertEquals(expected.length,result.size());

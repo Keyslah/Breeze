@@ -4,7 +4,7 @@ import android.content.Context;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** Low-priority period summaries, placed below the shared graph controls. */
+/** Sleep-period and import metadata. Measurement summaries live only in their control row. */
 final class OuraHistoryView extends LinearLayout {
     interface Changed{void changed(int mask);}
     private final LinearLayout summaries;private OuraData.Cache cache=OuraData.Cache.empty();
@@ -19,15 +19,11 @@ final class OuraHistoryView extends LinearLayout {
     private void render(){
         if(summaries==null)return;summaries.removeAllViews();
         if(cache.periods.isEmpty()){
-            if((mask&OuraData.TEMPERATURE)!=0)add("Oura temperature deviation: "+OuraData.UNAVAILABLE);
             if((mask&OuraData.HEART)!=0)add("BPM: "+OuraData.UNAVAILABLE);
-            if((mask&OuraData.BREATH)!=0)add("Oura respiratory rate: "+OuraData.UNAVAILABLE);
             if((mask&OuraData.STAGES)!=0)add("sleep: "+OuraData.UNAVAILABLE);
         }else{
             int index=0;for(OuraData.Period period:cache.periods){
                 if(mask==0)break;add("Sleep period "+(++index)+" · "+period.label());
-                if((mask&OuraData.TEMPERATURE)!=0)add(period.temperatureLabel()+" · nightly summary");
-                if((mask&OuraData.BREATH)!=0)add(period.breathLabel());
                 if((mask&OuraData.HEART)!=0&&period.heartCount()==0)add("BPM: "+OuraData.UNAVAILABLE);
                 if((mask&OuraData.STAGES)!=0&&!period.hasStages())add("sleep: "+OuraData.UNAVAILABLE);
             }

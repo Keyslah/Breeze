@@ -22,7 +22,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
     private final LinearLayout rows;
     private final List<ReadingCell> cells=new ArrayList<>();
     private final List<LinearLayout> ouraCells=new ArrayList<>();
-    private TextView bpm,sleepStage;
+    private TextView bpm,sleepStage,temperatureSummary,breathSummary;
     private int ouraMask;
     private static final int columns=4;
     private int visibleSeries=GraphView.DEFAULT_SERIES;
@@ -42,18 +42,24 @@ public final class GraphReadingDetailsView extends LinearLayout {
     public void setOnSeriesChangedListener(SeriesChangedListener listener){seriesChangedListener=listener;}
     void ouraControls(int mask,OuraHistoryView.Changed changed){
         ouraMask=mask;ouraCells.clear();
-        String[] labels={"Obpm","Osleep","Otemp","Oresp"};
+        String[] labels={"Obpm","Osleep","O temp","O resp"};
         String[] descriptions={"Oura heart rate","Oura sleep stages","Oura temperature deviation summary","Oura respiratory rate summary"};
         int[] bits={OuraData.HEART,OuraData.STAGES,OuraData.TEMPERATURE,OuraData.BREATH};
         int[] colors={OuraPlot.HEART_COLOR,0xff69bce1,0xffe9bd72,0xff79d5c3};
         for(int i=0;i<bits.length;i++){
-            final int bit=bits[i];LinearLayout cell=new LinearLayout(getContext());cell.setOrientation(VERTICAL);cell.setPadding(dp(2),0,dp(2),dp(2));
+            final int bit=bits[i];LinearLayout cell=new LinearLayout(getContext());cell.setOrientation(i<2?VERTICAL:HORIZONTAL);cell.setGravity(Gravity.CENTER_VERTICAL);cell.setPadding(dp(2),0,dp(2),dp(2));
             CheckBox box=new CheckBox(getContext());box.setTag("historyOura"+bit);box.setText(labels[i]);box.setTextSize(13);box.setTextColor(colors[i]);box.setButtonTintList(ColorStateList.valueOf(colors[i]));box.setContentDescription(descriptions[i]);box.setMinWidth(0);box.setMinimumWidth(0);box.setMinHeight(dp(48));box.setMinimumHeight(dp(48));box.setPadding(0,0,0,0);box.setChecked((mask&bit)!=0);
-            box.setOnCheckedChangeListener((button,checked)->{ouraMask=checked?ouraMask|bit:ouraMask&~bit;changed.changed(ouraMask);});cell.addView(box,wrap());
-            if(i<2){TextView value=text("—",22,colors[i]);value.setSingleLine(true);value.setAutoSizeTextTypeUniformWithConfiguration(12,22,1,android.util.TypedValue.COMPLEX_UNIT_SP);cell.addView(value,wrap());if(i==0)bpm=value;else sleepStage=value;}
+            box.setOnCheckedChangeListener((button,checked)->{ouraMask=checked?ouraMask|bit:ouraMask&~bit;summaryVisibility();changed.changed(ouraMask);});cell.addView(box,i<2?wrap():new LayoutParams(0,-2,1));
+            TextView value=text("—",22,colors[i]);value.setTag("historyOuraValue"+bit);value.setMaxLines(1);value.setAutoSizeTextTypeUniformWithConfiguration(12,22,1,android.util.TypedValue.COMPLEX_UNIT_SP);
+            cell.addView(value,i<2?wrap():new LayoutParams(0,-2,1));
+            if(i==0)bpm=value;else if(i==1)sleepStage=value;else if(i==2)temperatureSummary=value;else breathSummary=value;
             ouraCells.add(cell);
         }
-        rebuildRows();
+        summaryVisibility();rebuildRows();
+    }
+    private void summaryVisibility(){
+        if(temperatureSummary!=null)temperatureSummary.setVisibility((ouraMask&OuraData.TEMPERATURE)!=0?VISIBLE:INVISIBLE);
+        if(breathSummary!=null)breathSummary.setVisibility((ouraMask&OuraData.BREATH)!=0?VISIBLE:INVISIBLE);
     }
     void showOuraReading(List<OuraData.Period> periods,long time){
         if(bpm==null)return;String heart="—",stage="—";
@@ -63,6 +69,12 @@ public final class GraphReadingDetailsView extends LinearLayout {
             if(index>=0&&index<period.stages.length())stage=switch(period.stage(index)){case 1->"Deep";case 2->"Light";case 3->"REM";case 4->"Awake";default->"—";};
         }
         bpm.setText(heart);sleepStage.setText(stage);
+        OuraData.Period summary=periods.size()==1?periods.get(0):null;
+        for(OuraData.Period period:periods)if(time>=period.start&&time<=period.end)summary=period;
+        temperatureSummary.setText(summary!=null&&Double.isFinite(summary.temperatureC)?String.format(java.util.Locale.US,"%+.1f°F",OuraData.deviationF(summary.temperatureC)):"—");
+        breathSummary.setText(summary!=null&&Double.isFinite(summary.breath)?String.format(java.util.Locale.US,"%.1f/min",summary.breath):"—");
+        temperatureSummary.setContentDescription(summary==null?"Oura temperature deviation unavailable":summary.temperatureLabel());
+        breathSummary.setContentDescription(summary==null?"Oura respiratory rate unavailable":summary.breathLabel());
     }
     public void setVisibleSeries(int mask){
         visibleSeries=mask&GraphView.ALL_SERIES;syncingSeries=true;
@@ -90,7 +102,7 @@ public final class GraphReadingDetailsView extends LinearLayout {
         for(ReadingCell cell:cells)if(cell.getParent() instanceof ViewGroup)((ViewGroup)cell.getParent()).removeView(cell);
         for(View cell:ouraCells)if(cell.getParent() instanceof ViewGroup)((ViewGroup)cell.getParent()).removeView(cell);
         rows.removeAllViews();
-        List<View> ordered=new ArrayList<>();for(int[] group:DISPLAY_GROUPS)for(int series:group)ordered.add(cells.get(series));ordered.addAll(ouraCells);
+        List<View> ordered=new ArrayList<>();for(int[] group:DISPLAY_GROUPS)for(int series:group)ordered.add(cells.get(series));if(ouraCells.size()>=2)ordered.addAll(ouraCells.subList(0,2));
         for(int index=0;index<ordered.size();index+=columns){
             LinearLayout row=new LinearLayout(getContext());row.setOrientation(HORIZONTAL);
             for(int column=0;column<columns;column++){
@@ -99,6 +111,10 @@ public final class GraphReadingDetailsView extends LinearLayout {
                 if(column<columns-1)params.setMarginEnd(dp(4));row.addView(cell,params);
             }
             rows.addView(row,wrap());
+        }
+        if(ouraCells.size()==4){
+            LinearLayout row=new LinearLayout(getContext());row.setOrientation(HORIZONTAL);row.setTag("historyOuraSummaries");
+            row.addView(ouraCells.get(2),new LayoutParams(0,-2,1));row.addView(ouraCells.get(3),new LayoutParams(0,-2,1));rows.addView(row,wrap());
         }
     }
 

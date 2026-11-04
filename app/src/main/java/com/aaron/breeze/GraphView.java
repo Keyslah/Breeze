@@ -27,8 +27,9 @@ public class GraphView extends View {
     private int ouraMask;private long ouraStart,ouraEnd;
     private final Paint paint=new Paint(3);
     private boolean fahrenheit=true;
-    private boolean smoothHighestBody;
-    private HighestBodySmoother.Result smoothedHighestBody;
+    private boolean smoothHighestBody,smoothRoom;
+    private long bodyHalfWindowMs=60000,roomHalfWindowMs=60000;
+    private HighestBodySmoother.Result smoothedHighestBody,smoothedRoom;
     private int selected=-1,visible=DEFAULT_SERIES;
     private static final double MIN_WINDOW_MS=60000;
     private long sessionId=Long.MIN_VALUE;
@@ -57,7 +58,7 @@ public class GraphView extends View {
     public void setReadingDetailsListener(ReadingDetailsListener listener){readingDetailsListener=listener;notifyReadingDetails();}
     public GraphView(Context c){
         super(c);setLayerType(View.LAYER_TYPE_SOFTWARE,null);
-        setContentDescription("Recorded body temperatures use the right axis. Room, outdoor and optional Dreo fan temperatures use an independent ambient temperature axis on the left. Fan setting maps Off at the bottom to H at the top; humidity maps 0 percent at the bottom to 100 percent at the top. These scales do not change the body temperature range. Oura BPM overlays the same plot using its own far-right axis. The sleep band shares the time axis; temperature deviation and respiratory rate are summaries below the checkboxes. The sleep checkbox excludes all readings outside Oura sleep periods, including while zooming or panning. Times use a 24-hour clock. All readings share actual timestamps. Pinch to zoom, drag sideways to pan, tap to inspect a reading, or double-tap to show the whole night.");
+        setContentDescription("Recorded body temperatures use the right axis. Room, outdoor and optional Dreo fan temperatures use an independent ambient temperature axis on the left. Fan setting maps Off at the bottom to H at the top; humidity maps 0 percent at the bottom to 100 percent at the top. These scales do not change the body temperature range. Oura BPM overlays the same plot with pink scale readings directly below the orange body readings in one right-hand column. The sleep band shares the time axis; temperature deviation and respiratory rate appear only in their checkbox row. The sleep checkbox excludes all readings outside Oura sleep periods, including while zooming or panning. Times use a 24-hour clock. All readings share actual timestamps. Pinch to zoom, drag sideways to pan, tap to inspect a reading, or double-tap to show the whole night.");
         touchSlop=ViewConfiguration.get(c).getScaledTouchSlop();
         scale=new ScaleGestureDetector(c,new ScaleGestureDetector.SimpleOnScaleGestureListener(){
             @Override public boolean onScaleBegin(ScaleGestureDetector detector){
@@ -131,7 +132,7 @@ public class GraphView extends View {
         for(Store.FeelingEntry entry:sourceFeelings)if(allowed(entry.time))feelings.add(entry);
     }
     private void filterSleepData(){
-        points=filterPoints(sourcePoints);outdoor=filterPoints(sourceOutdoor);dreoTemperatures=filterPoints(sourceDreo);filterFeelings();refreshHighestBodySmoothing();
+        points=filterPoints(sourcePoints);outdoor=filterPoints(sourceOutdoor);dreoTemperatures=filterPoints(sourceDreo);filterFeelings();refreshSmoothing();
     }
     long inspectedTime(){return cursorTime!=Long.MIN_VALUE?cursorTime:hasWindow?(long)windowEnd:ouraStart;}
     int ouraHeightDp(){return OuraPlot.heightDp(ouraPeriods,ouraMask);}
@@ -145,9 +146,9 @@ public class GraphView extends View {
     private double windowSpan(){return windowEnd-windowStart;}
     private float plotLeft(){return dp(36);}
     private boolean bpmAxis(){return !ouraPeriods.isEmpty()&&(ouraMask&OuraData.HEART)!=0;}
-    private float plotRight(){return getWidth()-dp(36+(bpmAxis()?32:0));}
-    private float bodyAxisRight(){return getWidth()-dp(1+(bpmAxis()?32:0));}
-    private float plotTop(){return dp(30);}
+    private float plotRight(){return getWidth()-dp(36+(bpmAxis()?10:0));}
+    private float bodyAxisRight(){return getWidth()-dp(1);}
+    private float plotTop(){return dp(bpmAxis()&&!points.isEmpty()&&(visible&BODY_TEMPERATURE_SERIES)!=0?40:30);}
     private float chartBottom(){return getHeight()-dp(26+OuraPlot.sleepHeightDp(ouraPeriods,ouraMask));}
     private float sensorBottom(){return chartBottom()-(feelings.isEmpty()?0:dp(120));}
     float fanSettingY(double setting){return sensorBottom()-(sensorBottom()-plotTop())*(float)setting/FanSetting.MAX;}
@@ -191,22 +192,31 @@ public class GraphView extends View {
     public void visibleSeries(int mask){visible=mask&ALL_SERIES;notifyReadingDetails();invalidate();}
     public void setSmoothHighestBody(boolean enabled){
         if(smoothHighestBody==enabled)return;
-        smoothHighestBody=enabled;refreshHighestBodySmoothing();notifyReadingDetails();invalidate();
+        smoothHighestBody=enabled;refreshSmoothing();notifyReadingDetails();invalidate();
     }
-    private void refreshHighestBodySmoothing(){
-        if(!smoothHighestBody){smoothedHighestBody=null;return;}
-        long[] times=new long[points.size()];double[] highest=new double[points.size()];
-        for(int at=0;at<points.size();at++){Store.Point point=points.get(at);times[at]=point.time;highest[at]=highestBodyTemperature(point);}
+    public void setSmoothRoom(boolean enabled){
+        if(smoothRoom==enabled)return;smoothRoom=enabled;refreshSmoothing();notifyReadingDetails();invalidate();
+    }
+    void smoothingWindows(int bodyMinutes,int roomMinutes){
+        bodyHalfWindowMs=Math.max(Settings.MIN_SMOOTH_MINUTES,Math.min(Settings.MAX_SMOOTH_MINUTES,bodyMinutes))*30000L;
+        roomHalfWindowMs=Math.max(Settings.MIN_SMOOTH_MINUTES,Math.min(Settings.MAX_SMOOTH_MINUTES,roomMinutes))*30000L;
+        refreshSmoothing();notifyReadingDetails();invalidate();
+    }
+    private void refreshSmoothing(){
+        smoothedHighestBody=null;smoothedRoom=null;if(!smoothHighestBody&&!smoothRoom)return;
+        long[] times=new long[points.size()];double[] highest=new double[points.size()],room=new double[points.size()];
+        for(int at=0;at<points.size();at++){Store.Point point=points.get(at);times[at]=point.time;highest[at]=highestBodyTemperature(point);room[at]=point.room;}
         int[] groups=sleepOnly?new int[points.size()]:null;
         if(groups!=null)for(int at=0;at<groups.length;at++)groups[at]=sleepWindow.intervalAt(times[at]);
-        smoothedHighestBody=HighestBodySmoother.smooth(times,highest,groups);
+        if(smoothHighestBody)smoothedHighestBody=HighestBodySmoother.smooth(times,highest,groups,bodyHalfWindowMs,35000);
+        if(smoothRoom)smoothedRoom=HighestBodySmoother.smooth(times,room,groups,roomHalfWindowMs,65000);
     }
     private boolean enabled(int series){return (visible&(1<<series))!=0;}
     private boolean isOutdoor(int series){return series==3||series==5;}
     private boolean isHumidity(int series){return series==4||series==5;}
     private boolean isAmbient(int series){return (AMBIENT_TEMPERATURE_SERIES&(1<<series))!=0;}
-    private boolean breaksOnMissing(int series){return series==0||series==1||series==HIGHEST_BODY_SERIES||series==D2_BODY_SERIES||series==DREO_TEMPERATURE_SERIES;}
-    private long sampleGap(int series){return series==DREO_TEMPERATURE_SERIES?DREO_MAX_GAP_MS:isOutdoor(series)?3700000:breaksOnMissing(series)||series==FAN_SETTING_SERIES?35000:65000;}
+    private boolean breaksOnMissing(int series){return series==2&&smoothRoom||series==0||series==1||series==HIGHEST_BODY_SERIES||series==D2_BODY_SERIES||series==DREO_TEMPERATURE_SERIES;}
+    private long sampleGap(int series){return series==DREO_TEMPERATURE_SERIES?DREO_MAX_GAP_MS:isOutdoor(series)?3700000:series==2?65000:breaksOnMissing(series)||series==FAN_SETTING_SERIES?35000:65000;}
     private boolean continuous(int series,Store.Point earlier,Store.Point later){return sameSleep(earlier.time,later.time)&&later.time>=earlier.time&&later.time-earlier.time<=sampleGap(series)&&(series!=DREO_TEMPERATURE_SERIES||Objects.equals(earlier.segment,later.segment));}
     private float dp(float d){return d*getResources().getDisplayMetrics().density;}
     private float unit(double c){return(float)(fahrenheit?c*1.8+32:c);}
@@ -216,7 +226,7 @@ public class GraphView extends View {
     private double highestBodyTemperature(Store.Point point){
         return HighestBodySmoother.highest(bodyTemperature(point.probe),bodyTemperature(point.secondProbe),bodyTemperature(point.thirdProbe));
     }
-    private double displayedValue(List<Store.Point> recorded,int at,int series){return series==HIGHEST_BODY_SERIES&&smoothHighestBody?smoothedHighestBody.valueAt(at):value(recorded.get(at),series);}
+    private double displayedValue(List<Store.Point> recorded,int at,int series){return series==HIGHEST_BODY_SERIES&&smoothHighestBody?smoothedHighestBody.valueAt(at):series==2&&smoothRoom?smoothedRoom.valueAt(at):value(recorded.get(at),series);}
     private List<Store.Point> samples(int series){return series==DREO_TEMPERATURE_SERIES?dreoTemperatures:isOutdoor(series)?outdoor:points;}
     private void text(Canvas c,String t,float x,float y,int color,float size){paint.setColor(color);paint.setTextSize(dp(size));paint.setStyle(Paint.Style.FILL);c.drawText(t,x,y,paint);}
     private void rightText(Canvas c,String t,float right,float y,int color,float size){paint.setTextSize(dp(size));text(c,t,right-paint.measureText(t),y,color,size);}
@@ -245,7 +255,7 @@ public class GraphView extends View {
         for(Store.Point sample:outdoor){long delta=Math.abs(sample.time-point.time);if(sameSleep(sample.time,point.time)&&delta<distance&&delta<=3700000){distance=delta;weather=sample;}}
         List<ReadingValue> readings=new ArrayList<>();
         for(int series=0;series<LABELS.length;series++){
-            Store.Point sample=isOutdoor(series)?weather:point;double number=series==DREO_TEMPERATURE_SERIES?dreoTemperatureAt(point.time):sample==null?Double.NaN:series==HIGHEST_BODY_SERIES?displayedValue(points,readingIndex,series):value(sample,series);
+            Store.Point sample=isOutdoor(series)?weather:point;double number=series==DREO_TEMPERATURE_SERIES?dreoTemperatureAt(point.time):sample==null?Double.NaN:(series==HIGHEST_BODY_SERIES||series==2)?displayedValue(points,readingIndex,series):value(sample,series);
             readings.add(readingValue(series,number));
         }
         String note=(latest?"Latest visible recorded reading. ":"")+"Outdoor values use the nearest available hourly weather reading."+(enabled(DREO_TEMPERATURE_SERIES)?" Dreo values are the latest received cloud observation at or before this time, up to 4 minutes old.":"");
@@ -318,14 +328,14 @@ public class GraphView extends View {
         double[] temperatureRange=temperatureRangeC(BODY_TEMPERATURE_SERIES),ambientRange=visibleAmbientTemperatureRangeC();
         float min=unit(temperatureRange[0]),max=unit(temperatureRange[1]),ambientMin=unit(ambientRange[0]),ambientMax=unit(ambientRange[1]);
         String units=fahrenheit?"°F":"°C";
-        if(body)rightText(c,"Body "+units,bodyAxisRight(),dp(13),INK,10);
+        if(body)rightText(c,"Body "+units,bodyAxisRight(),dp(13),bpmAxis()?COLORS[HIGHEST_BODY_SERIES]:INK,10);
         if(ambient)text(c,"Ambient "+units,dp(1),dp(13),COLORS[2],10);
         else if(humidity)text(c,"% RH",dp(1),dp(13),COLORS[4],10);
         if(enabled(FAN_SETTING_SERIES))text(c,"Fan 0–H",l,dp(26),COLORS[FAN_SETTING_SERIES],10);
         if(humidity)rightText(c,"Humidity 0–100%",r,dp(26),COLORS[4],10);
         for(int i=0;!points.isEmpty()&&i<=4;i++){
             float y=bottom-(bottom-top)*i/4;paint.setColor(0xff374e3f);paint.setStrokeWidth(dp(1));c.drawLine(l,y,r,y,paint);
-            if(body)rightText(c,temperatureTickLabel(temperatureRange[0]+(temperatureRange[1]-temperatureRange[0])*i/4,(max-min)/4),bodyAxisRight(),y+dp(4),MUTED,10);
+            if(body)rightText(c,temperatureTickLabel(temperatureRange[0]+(temperatureRange[1]-temperatureRange[0])*i/4,(max-min)/4),bodyAxisRight(),y+dp(bpmAxis()?-2:4),bpmAxis()?COLORS[HIGHEST_BODY_SERIES]:MUTED,10);
             if(ambient)text(c,temperatureTickLabel(ambientRange[0]+(ambientRange[1]-ambientRange[0])*i/4,(ambientMax-ambientMin)/4),dp(1),y+dp(4),COLORS[2],10);
             else if(humidity)text(c,""+(i*25),dp(1),y+dp(4),COLORS[4],10);
         }
@@ -337,7 +347,7 @@ public class GraphView extends View {
         fanLine(c,l,r,top,bottom,humidity||ambient);feelingMarkers(c,l,r,top,bottom);
         OuraPlot.X ouraX=time->l+(r-l)*(float)((time-windowStart)/windowSpan());
         float density=getResources().getDisplayMetrics().density;
-        OuraPlot.heart(c,ouraPeriods,ouraMask,l,r,top,bottom,getWidth()-dp(1),density,ouraX);
+        OuraPlot.heart(c,ouraPeriods,ouraMask,l,r,top,bottom,bodyAxisRight(),body,density,ouraX);
         OuraPlot.sleep(c,ouraPeriods,ouraMask,footer,l,r,density,ouraX);
         footer+=dp(OuraPlot.sleepHeightDp(ouraPeriods,ouraMask));
         drawTimeAxis(c,l,r,footer,start,end);
@@ -422,7 +432,8 @@ public class GraphView extends View {
         int first=Math.max(0,firstIndexAtOrAfter(list,start)-1),limit=Math.min(list.size(),firstIndexAtOrAfter(list,end)+1),stride=series==DREO_TEMPERATURE_SERIES?1:Math.max(1,(limit-first)/1500);
         for(int i=first;i<limit;i+=stride){Store.Point p=list.get(i);double v=displayedValue(list,i,series);if(!Double.isFinite(v)){if(breaksOnMissing(series))has=false;continue;}
             float converted=isHumidity(series)?(float)v:unit(v);float x=l+(r-l)*(float)((p.time-start)/(end-start)),y=bottom-(bottom-top)*(converted-min)/(max-min);
-            boolean smoothingBreak=series==HIGHEST_BODY_SERIES&&smoothHighestBody&&previousIndex>=0&&!smoothedHighestBody.sameSegment(previousIndex,i);
+            HighestBodySmoother.Result smoothing=series==HIGHEST_BODY_SERIES&&smoothHighestBody?smoothedHighestBody:series==2&&smoothRoom?smoothedRoom:null;
+            boolean smoothingBreak=smoothing!=null&&previousIndex>=0&&!smoothing.sameSegment(previousIndex,i);
             boolean segmentBreak=previousIndex>=0&&(!sameSleep(list.get(previousIndex).time,p.time)||series==DREO_TEMPERATURE_SERIES&&!continuous(series,list.get(previousIndex),p));
             boolean skippedBodyBreak=has&&stride>1&&(BODY_TEMPERATURE_SERIES&(1<<series))!=0&&bodyBreakBetween(list,series,previousIndex,i);
             if(!has||p.time-prev>gap*stride||smoothingBreak||segmentBreak||skippedBodyBreak)path.moveTo(x,y);else path.lineTo(x,y);has=true;prev=p.time;previousIndex=i;

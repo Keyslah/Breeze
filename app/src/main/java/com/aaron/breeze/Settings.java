@@ -84,7 +84,10 @@ public final class Settings {
     private static void commitLogic(SharedPreferences.Editor edit){
         if(!edit.commit())throw new IllegalStateException("Could not save the logic profile.");
     }
-    static boolean historySmoothHighestBody(SharedPreferences prefs){return prefs.getBoolean("historySmoothHighestBody",false);}
+    static final int MIN_SMOOTH_MINUTES=1,MAX_SMOOTH_MINUTES=20,DEFAULT_SMOOTH_MINUTES=2;
+    static boolean historySmoothHighestBody(SharedPreferences prefs){return prefs.getBoolean("historySmoothHighestBody",true);}
+    static boolean historySmoothRoom(SharedPreferences prefs){return prefs.getBoolean("historySmoothRoom",true);}
+    static int historySmoothingMinutes(SharedPreferences prefs,boolean room){return Math.max(MIN_SMOOTH_MINUTES,Math.min(MAX_SMOOTH_MINUTES,prefs.getInt(room?"historyRoomSmoothMinutes":"historyBodySmoothMinutes",DEFAULT_SMOOTH_MINUTES)));}
     static int historyVisibleSeries(SharedPreferences prefs){
         int visible=prefs.getInt("historyVisibleSeries",GraphView.DEFAULT_SERIES)&GraphView.ALL_SERIES;
         if(!prefs.getBoolean("historyHighestBodyDefaultApplied",false)){

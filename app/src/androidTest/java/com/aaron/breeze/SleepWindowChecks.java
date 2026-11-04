@@ -29,7 +29,7 @@ final class SleepWindowChecks {
         graph.dreoTemperatures(List.of(point(START-1000,200)));
         Store.FeelingEntry feeling=new Store.FeelingEntry();feeling.id=1;feeling.time=START-1000;feeling.signedValue=5;graph.feelings(List.of(feeling));
         graph.oura(List.of(period(START,START+120000)),0,START-10000,START+130000);
-        GraphView.ReadingDetails[] selected={null};graph.setReadingDetailsListener(value->selected[0]=value);graph.setSmoothHighestBody(true);graph.sleepOnly(true);
+        GraphView.ReadingDetails[] selected={null};graph.setReadingDetailsListener(value->selected[0]=value);graph.setSmoothHighestBody(true);graph.setSmoothRoom(true);graph.sleepOnly(true);
         check(graph.visibleStartTime()==START&&graph.visibleEndTime()==START+120000,"Sleep fills exact Oura interval");
         check(list(graph,"points").size()==4&&list(graph,"outdoor").isEmpty()&&list(graph,"dreoTemperatures").isEmpty()&&list(graph,"feelings").isEmpty(),"All sources actually exclude outside readings");
         check(selected[0].values.get(6).value.equals("36.0°C"),"Outside extremes cannot affect smoothing/readouts");

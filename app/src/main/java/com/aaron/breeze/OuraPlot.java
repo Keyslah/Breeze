@@ -14,12 +14,12 @@ final class OuraPlot {
     static int sleepHeightDp(List<OuraData.Period> periods,int mask){return periods.isEmpty()||(mask&OuraData.STAGES)==0?0:40;}
     interface X {float at(double time);}
     private static void text(Canvas c,Paint p,String text,float x,float y,int color,float density,float size){p.setStyle(Paint.Style.FILL);p.setColor(color);p.setTextSize(size*density);c.drawText(text,x,y,p);}
-    static void heart(Canvas c,List<OuraData.Period> periods,int mask,float left,float right,float top,float bottom,float axisRight,float density,X x){
+    static void heart(Canvas c,List<OuraData.Period> periods,int mask,float left,float right,float top,float bottom,float axisRight,boolean stacked,float density,X x){
         if(periods.isEmpty()||(mask&OuraData.HEART)==0)return;Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);double[] range=heartRange(periods);
-        p.setTextAlign(Paint.Align.RIGHT);text(c,p,"BPM",axisRight,13*density,HEART_COLOR,density,10);
+        p.setTextAlign(Paint.Align.RIGHT);text(c,p,"BPM",axisRight,(stacked?26:13)*density,HEART_COLOR,density,10);
         for(int tick=0;tick<=4;tick++){
             double value=range[0]+(range[1]-range[0])*tick/4;
-            text(c,p,String.format(Locale.US,value==Math.rint(value)?"%.0f":"%.1f",value),axisRight,bottom-(bottom-top)*tick/4+4*density,HEART_COLOR,density,10);
+            text(c,p,String.format(Locale.US,value==Math.rint(value)?"%.0f":"%.1f",value),axisRight,bottom-(bottom-top)*tick/4+(stacked?11:4)*density,HEART_COLOR,density,10);
         }
         c.save();c.clipRect(left,top,right,bottom);
         for(OuraData.Period period:periods){

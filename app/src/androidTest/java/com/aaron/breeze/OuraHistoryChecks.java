@@ -55,9 +55,9 @@ final class OuraHistoryChecks {
                 try(android.database.Cursor c=reopened.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM oura_sleep",null)){c.moveToFirst();check(c.getInt(0)==1,"Retired source is preserved, not deleted");}
             }
             OuraData.Period synthetic=period("graph-only",0.5);Throwable[] failure={null};
-            test.runOnMainSync(()->{try{graph(context,synthetic);SleepWindowChecks.run(context);}catch(Throwable e){failure[0]=e;}});
+            test.runOnMainSync(()->{try{graph(context,synthetic);SleepWindowChecks.run(context);GraphSmoothingChecks.run(context);HighestBodyGraphChecks.run(context);}catch(Throwable e){failure[0]=e;}});
             if(failure[0]!=null)throw new AssertionError("Off-screen Oura graph checks",failure[0]);
-            return "PASS: additive 7 -> 9 migration, preserved sensor rows/export/cursor, idempotent refresh, source revisions, offline reopen, empty cache, gap rendering, independent BPM/temperature scale and height, zoom/pan preservation, strict sleep filtering including forced outside viewports, source restoration, 24-hour Central DST; synthetic isolated fixtures only\n";
+            return "PASS: additive 7 -> 9 migration, preserved sensor rows/export/cursor, idempotent refresh, source revisions, offline reopen, empty cache, gap rendering, independent BPM/temperature scale and height, zoom/pan preservation, strict sleep filtering including forced outside viewports, source restoration, 24-hour Central DST, independent body/room smoothing, persisted strength sliders; synthetic isolated fixtures only\n";
         }finally{context.deleteDatabase(name);}
     }
     private static void graph(Context context,OuraData.Period period)throws Exception{
@@ -70,7 +70,7 @@ final class OuraHistoryChecks {
         double[] temperature=graph.visibleTemperatureRangeC();
         graph.oura(List.of(period),OuraData.ALL,START,END);int height=Math.round((346+graph.ouraHeightDp())*density);graph.layout(0,0,width,height);
         check(graph.visibleStartTime()==oldStart&&graph.visibleEndTime()==oldEnd,"Oura import preserves zoom and pan");
-        check(Math.abs(graph.fanSettingY(0)-graph.fanSettingY(FanSetting.MAX)-plotHeight)<1,"Sleep band preserves original sensor plot height");
+        check(Math.abs(graph.fanSettingY(0)-graph.fanSettingY(FanSetting.MAX)-plotHeight+10*density)<1,"Stacked axis labels reserve 10 dp above the plot");
         check(java.util.Arrays.equals(temperature,graph.visibleTemperatureRangeC()),"BPM and temperature deviations never alter body-temperature scale");
         Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);graph.draw(new Canvas(bitmap));
         // A flat HR fixture makes a bridged null sample detectable at the midpoint.
@@ -82,6 +82,9 @@ final class OuraHistoryChecks {
         check((bitmap.getPixel(validX,stageY)&0xffffff)==(OuraPlot.STAGE_COLORS[1]&0xffffff),"Stage uses returned five-minute bins");
         int gapPixel=bitmap.getPixel(gapX,stageY)&0xffffff;
         for(int color:OuraPlot.STAGE_COLORS)if(color!=0)check(gapPixel!=(color&0xffffff),"Unknown stage remains a gap");
+        int bodyInk=0,heartInk=0;int axisLeft=Math.round(315*density),axisTop=hrY-Math.round(14*density),axisBottom=hrY+Math.round(15*density);
+        for(int y=axisTop;y<axisBottom;y++)for(int x=axisLeft;x<width;x++){int color=bitmap.getPixel(x,y);if(color==GraphView.COLORS[6])bodyInk++;if(color==OuraPlot.HEART_COLOR)heartInk++;}
+        check(bodyInk>0&&heartInk>0,"Body and BPM labels occupy the same right-hand column in different colors");
         bitmap.recycle();
         graph.oura(List.of(period),OuraData.HEART,START,END);graph.layout(0,0,width,Math.round(346*density));
         check(graph.ouraHeightDp()==0,"BPM never adds a separate graph or extra height");
@@ -91,6 +94,10 @@ final class OuraHistoryChecks {
         check(graph.ouraHeightDp()==0&&graph.visibleStartTime()==oldStart&&graph.visibleEndTime()==oldEnd,"Hiding Oura preserves viewport");
         check(new GraphView.ReadingDetails(START,List.of(),"").timestamp.endsWith("00:30:00"),"Readout uses Central DST regardless of device zone");
         preview(context,period);
+    }
+    private static boolean hasSummaryText(android.view.View view){
+        if(view instanceof android.widget.TextView){String text=((android.widget.TextView)view).getText().toString();if(text.contains("temperature deviation")||text.contains("respiratory rate"))return true;}
+        if(view instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)view;for(int i=0;i<group.getChildCount();i++)if(hasSummaryText(group.getChildAt(i)))return true;}return false;
     }
     private static void settle(android.view.View view){view.jumpDrawablesToCurrentState();if(view instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)view;for(int i=0;i<group.getChildCount();i++)settle(group.getChildAt(i));}}
     private static void preview(Context context,OuraData.Period period)throws Exception{
@@ -105,12 +112,22 @@ final class OuraHistoryChecks {
         android.widget.LinearLayout panel=new android.widget.LinearLayout(context);panel.setOrientation(android.widget.LinearLayout.VERTICAL);panel.setBackgroundColor(0xff20352b);
         HistoryGraphHeader header=new HistoryGraphHeader(context);header.sleep.setChecked(true);panel.addView(header);
         GraphView graph=new GraphView(context);java.util.ArrayList<Store.Point> readings=new java.util.ArrayList<>();
-        for(int second=-3600;second<=25740;second+=10){Store.Point p=new Store.Point(start+second*1000L,36.5+0.08*Math.sin(second/900.0),22+0.2*Math.sin(second/1800.0),50,0);p.fanSetting=second<11000?4:3;readings.add(p);}
+        for(int second=-3600;second<=25740;second+=10){if(start+second*1000L==end)continue;Store.Point p=new Store.Point(start+second*1000L,36.5+0.08*Math.sin(second/900.0),22+0.2*Math.sin(second/1800.0),50,0);p.fanSetting=second<11000?4:3;readings.add(p);}
         graph.data(1,readings,List.of(),true,(1<<6)|(1<<2)|(1<<8));graph.oura(List.of(previewPeriod),OuraData.ALL,start-3600000,end+3600000);graph.sleepOnly(true);
+        graph.setSmoothHighestBody(true);graph.setSmoothRoom(true);
         panel.addView(graph,new android.widget.LinearLayout.LayoutParams(-1,Math.round((346+graph.ouraHeightDp())*density)));
         GraphReadingDetailsView details=new GraphReadingDetailsView(context);details.setVisibleSeries((1<<6)|(1<<2)|(1<<8));details.ouraControls(OuraData.ALL,mask->{});
         graph.setReadingDetailsListener(value->{details.showReading(value);long time=value==null?graph.inspectedTime():value.time;header.time(time);details.showOuraReading(List.of(previewPeriod),time);});panel.addView(details,new android.widget.LinearLayout.LayoutParams(-1,-2));
+        String preferenceName="temporary-preview-smoothing-"+System.nanoTime();
+        android.content.SharedPreferences prefs=context.getSharedPreferences(preferenceName,Context.MODE_PRIVATE);
+        panel.addView(new GraphSmoothingControls(context,prefs,graph));context.deleteSharedPreferences(preferenceName);
         OuraHistoryView oura=new OuraHistoryView(context,OuraData.ALL,mask->{});oura.data(new OuraData.Cache(true,start,List.of(previewPeriod)));panel.addView(oura,new android.widget.LinearLayout.LayoutParams(-1,-2));
+        android.widget.TextView temp=details.findViewWithTag("historyOuraValue"+OuraData.TEMPERATURE),resp=details.findViewWithTag("historyOuraValue"+OuraData.BREATH);
+        android.widget.CheckBox tempControl=details.findViewWithTag("historyOura"+OuraData.TEMPERATURE),respControl=details.findViewWithTag("historyOura"+OuraData.BREATH);
+        check(temp.getText().toString().equals("+0.9°F")&&resp.getText().toString().equals("14.5/min"),"Oura period summaries appear next to their controls");
+        check(tempControl.getText().toString().equals("O temp")&&respControl.getText().toString().equals("O resp"),"Summary labels retain the requested spacing");
+        check(temp.getParent()==tempControl.getParent()&&resp.getParent()==respControl.getParent()&&temp.getParent().getParent()==resp.getParent().getParent(),"Both summaries stay in the checkbox row");
+        check(!hasSummaryText(oura),"No duplicate temperature or respiratory summaries below the row");
         panel.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED));panel.layout(0,0,width,panel.getMeasuredHeight());
         check(header.time.getText().length()>0&&header.time.getWidth()>0&&header.getWidth()==width&&header.time.getHeight()>0,"Header time layout: text="+header.time.getText()+" width="+header.time.getWidth()+" header="+header.getWidth()+" sleep="+header.sleep.getWidth()+" timeHeight="+header.time.getHeight()+" headerHeight="+header.getHeight());
         settle(panel);

@@ -135,14 +135,14 @@ final class HighestBodyGraphChecks {
         check(reading[0].time==START+60000&&reading[0].values.get(6).value.equals("34.6°C"),"The inspected Highest value matches its centered 13-sample average");
         check(reading[0].values.get(6).label.equals("Highest body temp")&&!reading[0].note.contains("2-minute average"),"Smoothing keeps the concise label without adding an always-visible explanation");
         List<CheckBox> controls=new ArrayList<>();checkboxes(panel,controls);controls.sort(java.util.Comparator.comparingInt(control->Integer.parseInt(control.getTag().toString().substring(13))));
-        check(controls.get(6).getText().toString().equals("Highest body temp"),"The integrated readout keeps its concise Highest body temp label");
+        check(controls.get(6).getText().toString().equals("body"),"The integrated readout keeps its concise Highest body temp label");
         for(int series=0;series<raw.size();series++)if(series!=GraphView.HIGHEST_BODY_SERIES)check(raw.get(series).value.equals(reading[0].values.get(series).value),"Smoothing leaves source, room, weather, humidity and fan readouts unchanged");
         double[] smoothedRange=graph.visibleTemperatureRangeC();check(smoothedRange[1]<rawRange[1]&&smoothedRange[1]<37,"Highest-only autoscale follows smoothed values instead of the raw spike");
         check(start==graph.visibleStartTime()&&end==graph.visibleEndTime()&&graph.isZoomed(),"Toggling smoothing preserves the zoom and inspected timestamp");
         for(int i=0;i<samples.size();i++){Store.Point point=samples.get(i);check(point.time==START+i*10000L&&point.probe==(i==6?42:34)&&point.secondProbe==33&&point.thirdProbe==32.5&&point.room==75&&point.humidity==99&&point.fanSetting==5,"Display smoothing never rewrites recorded points");}
         graph.visibleSeries(1);double[] rawOnlyBefore=graph.visibleTemperatureRangeC();graph.setSmoothHighestBody(false);double[] rawOnlyAfter=graph.visibleTemperatureRangeC();
         check(rawOnlyBefore[0]==rawOnlyAfter[0]&&rawOnlyBefore[1]==rawOnlyAfter[1],"A displayed individual probe keeps the same scale when Highest smoothing changes");
-        check(reading[0].values.get(6).value.equals("42.0°C")&&controls.get(6).getText().toString().equals(GraphView.LABELS[6]),"Unchecking smoothing restores the original Highest value and label");
+        check(reading[0].values.get(6).value.equals("42.0°C")&&controls.get(6).getText().toString().equals("body"),"Unchecking smoothing restores the original Highest value and label");
         graph.visibleSeries(1<<GraphView.HIGHEST_BODY_SERIES);double[] restored=graph.visibleTemperatureRangeC();check(restored[0]==rawRange[0]&&restored[1]==rawRange[1],"Unchecking smoothing exactly restores the raw temperature scale");
         graph.setSmoothHighestBody(true);graph.data(87,samples,List.of(),true,1<<GraphView.HIGHEST_BODY_SERIES);
         check(reading[0].time==START+60000&&reading[0].values.get(6).value.equals("94.3°F")&&reading[0].values.get(0).value.equals("107.6°F"),"Refresh keeps selection and converts smoothed Highest and raw probe values independently");
@@ -161,7 +161,7 @@ final class HighestBodyGraphChecks {
         String name="highest-body-graph-checks-"+SystemClock.elapsedRealtimeNanos();
         SharedPreferences prefs=context.getSharedPreferences(name,Context.MODE_PRIVATE);
         try{
-            check(!Settings.historySmoothHighestBody(prefs),"Highest smoothing defaults off for existing and new recordings");
+            check(Settings.historySmoothHighestBody(prefs)&&Settings.historySmoothRoom(prefs),"Both smoothing choices default on when not explicitly saved");
             check(prefs.edit().putBoolean("historySmoothHighestBody",true).commit()&&Settings.historySmoothHighestBody(prefs),"The optional smoothing choice persists");
             check(prefs.edit().putBoolean("historySmoothHighestBody",false).commit()&&!Settings.historySmoothHighestBody(prefs),"The original unsmoothed view can be restored persistently");
             check(Settings.historyVisibleSeries(prefs)==376,"Fresh graph defaults show highest body temperature, fan setting and existing non-body defaults");
