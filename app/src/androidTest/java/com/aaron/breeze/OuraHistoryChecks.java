@@ -55,9 +55,9 @@ final class OuraHistoryChecks {
                 try(android.database.Cursor c=reopened.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM oura_sleep",null)){c.moveToFirst();check(c.getInt(0)==1,"Retired source is preserved, not deleted");}
             }
             OuraData.Period synthetic=period("graph-only",0.5);Throwable[] failure={null};
-            test.runOnMainSync(()->{try{graph(context,synthetic);}catch(Throwable e){failure[0]=e;}});
+            test.runOnMainSync(()->{try{graph(context,synthetic);SleepWindowChecks.run(context);}catch(Throwable e){failure[0]=e;}});
             if(failure[0]!=null)throw new AssertionError("Off-screen Oura graph checks",failure[0]);
-            return "PASS: additive 7 -> 9 migration, preserved sensor rows/export/cursor, idempotent refresh, source revisions, offline reopen, empty cache, gap rendering, independent BPM/temperature scale and height, zoom/pan preservation, Central DST; synthetic isolated fixtures only\n";
+            return "PASS: additive 7 -> 9 migration, preserved sensor rows/export/cursor, idempotent refresh, source revisions, offline reopen, empty cache, gap rendering, independent BPM/temperature scale and height, zoom/pan preservation, strict sleep filtering including forced outside viewports, source restoration, 24-hour Central DST; synthetic isolated fixtures only\n";
         }finally{context.deleteDatabase(name);}
     }
     private static void graph(Context context,OuraData.Period period)throws Exception{
@@ -70,7 +70,7 @@ final class OuraHistoryChecks {
         double[] temperature=graph.visibleTemperatureRangeC();
         graph.oura(List.of(period),OuraData.ALL,START,END);int height=Math.round((346+graph.ouraHeightDp())*density);graph.layout(0,0,width,height);
         check(graph.visibleStartTime()==oldStart&&graph.visibleEndTime()==oldEnd,"Oura import preserves zoom and pan");
-        check(Math.abs(graph.fanSettingY(0)-graph.fanSettingY(FanSetting.MAX)-plotHeight)<1,"Summaries and sleep band preserve original sensor plot height");
+        check(Math.abs(graph.fanSettingY(0)-graph.fanSettingY(FanSetting.MAX)-plotHeight)<1,"Sleep band preserves original sensor plot height");
         check(java.util.Arrays.equals(temperature,graph.visibleTemperatureRangeC()),"BPM and temperature deviations never alter body-temperature scale");
         Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);graph.draw(new Canvas(bitmap));
         // A flat HR fixture makes a bridged null sample detectable at the midpoint.
@@ -89,19 +89,31 @@ final class OuraHistoryChecks {
         check(graph.ouraHeightDp()==40,"Multiple sleep periods share one BPM scale and one sleep band");
         graph.oura(List.of(period),0,START,END);graph.layout(0,0,width,Math.round(346*density));
         check(graph.ouraHeightDp()==0&&graph.visibleStartTime()==oldStart&&graph.visibleEndTime()==oldEnd,"Hiding Oura preserves viewport");
-        check(new GraphView.ReadingDetails(START,List.of(),"").timestamp.contains("CDT"),"Readout uses Central DST regardless of device zone");
+        check(new GraphView.ReadingDetails(START,List.of(),"").timestamp.endsWith("00:30:00"),"Readout uses Central DST regardless of device zone");
         preview(context,period);
     }
+    private static void settle(android.view.View view){view.jumpDrawablesToCurrentState();if(view instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)view;for(int i=0;i<group.getChildCount();i++)settle(group.getChildAt(i));}}
     private static void preview(Context context,OuraData.Period period)throws Exception{
-        float density=context.getResources().getDisplayMetrics().density;int width=Math.round(400*density);
+        float density=context.getResources().getDisplayMetrics().density;int width=Math.round(360*density);
+        long start=OuraData.timestamp("2026-11-03T00:53:28-06:00"),end=OuraData.timestamp("2026-11-03T07:02:28-06:00");
+        JSONArray heart=new JSONArray();StringBuilder stages=new StringBuilder();
+        for(int i=0;i<74;i++)heart.put(i==30?JSONObject.NULL:55+8*Math.sin(i/4.0));
+        for(int i=0;i<738;i++)stages.append(i<30||i>710?'4':i%180<60?'1':i%180<140?'2':'3');
+        JSONObject source=new JSONObject().put("id","preview").put("day","2026-11-03").put("type","long_sleep").put("bedtime_start","2026-11-03T00:53:28-06:00").put("bedtime_end","2026-11-03T07:02:28-06:00")
+            .put("heart_rate",new JSONObject().put("timestamp","2026-11-03T00:53:28-06:00").put("interval",300).put("items",heart)).put("sleep_phase_30_sec",stages.toString()).put("average_breath",14.5).put("readiness",new JSONObject().put("temperature_deviation",0.5));
+        OuraData.Period previewPeriod=new OuraData.Period(OuraData.retain(source,null));
         android.widget.LinearLayout panel=new android.widget.LinearLayout(context);panel.setOrientation(android.widget.LinearLayout.VERTICAL);panel.setBackgroundColor(0xff20352b);
+        HistoryGraphHeader header=new HistoryGraphHeader(context);header.sleep.setChecked(true);panel.addView(header);
         GraphView graph=new GraphView(context);java.util.ArrayList<Store.Point> readings=new java.util.ArrayList<>();
-        for(int second=0;second<=1200;second+=10){Store.Point p=new Store.Point(START+second*1000L,36.5+0.08*Math.sin(second/90.0),22+0.2*Math.sin(second/180.0),50,0);p.fanSetting=second<600?4:3;readings.add(p);}
-        graph.data(1,readings,List.of(),true,(1<<6)|(1<<2)|(1<<8));graph.oura(List.of(period),OuraData.ALL,START,END);
+        for(int second=-3600;second<=25740;second+=10){Store.Point p=new Store.Point(start+second*1000L,36.5+0.08*Math.sin(second/900.0),22+0.2*Math.sin(second/1800.0),50,0);p.fanSetting=second<11000?4:3;readings.add(p);}
+        graph.data(1,readings,List.of(),true,(1<<6)|(1<<2)|(1<<8));graph.oura(List.of(previewPeriod),OuraData.ALL,start-3600000,end+3600000);graph.sleepOnly(true);
         panel.addView(graph,new android.widget.LinearLayout.LayoutParams(-1,Math.round((346+graph.ouraHeightDp())*density)));
-        GraphReadingDetailsView details=new GraphReadingDetailsView(context);details.setVisibleSeries((1<<6)|(1<<2)|(1<<8));graph.setReadingDetailsListener(details::showReading);panel.addView(details,new android.widget.LinearLayout.LayoutParams(-1,-2));
-        OuraHistoryView oura=new OuraHistoryView(context,OuraData.ALL,mask->{});oura.data(new OuraData.Cache(true,START,List.of(period)));panel.addView(oura,new android.widget.LinearLayout.LayoutParams(-1,-2));
+        GraphReadingDetailsView details=new GraphReadingDetailsView(context);details.setVisibleSeries((1<<6)|(1<<2)|(1<<8));details.ouraControls(OuraData.ALL,mask->{});
+        graph.setReadingDetailsListener(value->{details.showReading(value);long time=value==null?graph.inspectedTime():value.time;header.time(time);details.showOuraReading(List.of(previewPeriod),time);});panel.addView(details,new android.widget.LinearLayout.LayoutParams(-1,-2));
+        OuraHistoryView oura=new OuraHistoryView(context,OuraData.ALL,mask->{});oura.data(new OuraData.Cache(true,start,List.of(previewPeriod)));panel.addView(oura,new android.widget.LinearLayout.LayoutParams(-1,-2));
         panel.measure(android.view.View.MeasureSpec.makeMeasureSpec(width,android.view.View.MeasureSpec.EXACTLY),android.view.View.MeasureSpec.makeMeasureSpec(0,android.view.View.MeasureSpec.UNSPECIFIED));panel.layout(0,0,width,panel.getMeasuredHeight());
+        check(header.time.getText().length()>0&&header.time.getWidth()>0&&header.getWidth()==width&&header.time.getHeight()>0,"Header time layout: text="+header.time.getText()+" width="+header.time.getWidth()+" header="+header.getWidth()+" sleep="+header.sleep.getWidth()+" timeHeight="+header.time.getHeight()+" headerHeight="+header.getHeight());
+        settle(panel);
         Bitmap image=Bitmap.createBitmap(width,panel.getMeasuredHeight(),Bitmap.Config.ARGB_8888);panel.draw(new Canvas(image));
         try(java.io.FileOutputStream output=new java.io.FileOutputStream(new java.io.File(context.getCacheDir(),"oura-combined-preview.png"))){check(image.compress(Bitmap.CompressFormat.PNG,100,output),"Write offscreen preview");}finally{image.recycle();}
     }

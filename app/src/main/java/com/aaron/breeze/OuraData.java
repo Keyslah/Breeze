@@ -14,7 +14,7 @@ final class OuraData {
     static final int TEMPERATURE=1,HEART=2,BREATH=4,STAGES=8,ALL=15;
     static final String UNAVAILABLE="Unavailable from Oura";
     static long timestamp(String value){try{return OffsetDateTime.parse(value).toInstant().toEpochMilli();}catch(Exception invalid){return -1;}}
-    static String time(long value){return DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a z",Locale.US).withZone(CENTRAL).format(Instant.ofEpochMilli(value));}
+    static String time(long value){return DateTimeFormatter.ofPattern("MMM d, yyyy · HH:mm",Locale.US).withZone(CENTRAL).format(Instant.ofEpochMilli(value));}
     static double number(JSONObject value,String key){Object raw=value==null?null:value.opt(key);return raw instanceof Number&&Double.isFinite(((Number)raw).doubleValue())?((Number)raw).doubleValue():Double.NaN;}
     static boolean overlaps(long a,long b,long c,long d){return a<d&&b>c&&b>a&&d>c;}
     static double deviationF(double c){return c*1.8;}

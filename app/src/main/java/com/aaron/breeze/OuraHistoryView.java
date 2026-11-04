@@ -1,30 +1,20 @@
 package com.aaron.breeze;
 
 import android.content.Context;
-import android.content.res.ColorStateList;
-import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** Native History controls and explicitly labeled summaries, independent of cursor selection. */
+/** Low-priority period summaries, placed below the shared graph controls. */
 final class OuraHistoryView extends LinearLayout {
     interface Changed{void changed(int mask);}
     private final LinearLayout summaries;private OuraData.Cache cache=OuraData.Cache.empty();
     private int mask;private final TextView imported;
     OuraHistoryView(Context c,int initial,Changed changed){
         super(c);setOrientation(VERTICAL);mask=initial;
-        TextView title=text("Oura",18,0xffe5eee6);addView(title);
-        String[] labels={"deviation","BPM","resp. rate","sleep"};
-        int[] bits={OuraData.TEMPERATURE,OuraData.HEART,OuraData.BREATH,OuraData.STAGES};
-        int[] colors={0xffe9bd72,OuraPlot.HEART_COLOR,0xff79d5c3,0xff69bce1};
-        LinearLayout controls=new LinearLayout(c);controls.setOrientation(HORIZONTAL);addView(controls);
-        for(int i=0;i<labels.length;i++){
-            final int bit=bits[i];CheckBox box=new CheckBox(c);box.setText(labels[i]);box.setContentDescription(new String[]{"Oura temperature deviation","BPM","Oura respiratory rate","sleep"}[i]);box.setTag("historyOura"+bit);box.setTextSize(13);box.setTextColor(colors[i]);box.setButtonTintList(ColorStateList.valueOf(colors[i]));box.setMinWidth(0);box.setMinimumWidth(0);box.setPadding(0,0,0,0);
-            box.setMinimumHeight(dp(48));box.setChecked((mask&bit)!=0);box.setOnCheckedChangeListener((button,checked)->{mask=checked?mask|bit:mask&~bit;render();changed.changed(mask);});controls.addView(box,new LinearLayout.LayoutParams(0,-2,1));
-        }
         summaries=new LinearLayout(c);summaries.setOrientation(VERTICAL);addView(summaries);
         imported=text("",12,0xffa6b9ac);addView(imported);render();
     }
+    void mask(int value){mask=value;render();}
     void data(OuraData.Cache value){cache=value;render();}
     private void render(){
         if(summaries==null)return;summaries.removeAllViews();

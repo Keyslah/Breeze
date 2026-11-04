@@ -26,6 +26,9 @@ public final class HighestBodySmoother {
 
     /** Mean of available samples within one minute either side, without crossing a missing reading or gap. */
     public static Result smooth(long[] times,double[] highest){
+        return smooth(times,highest,null);
+    }
+    static Result smooth(long[] times,double[] highest,int[] groups){
         if(times==null||highest==null||times.length!=highest.length)throw new IllegalArgumentException("Smoothing needs matching timestamps and temperatures.");
         double[] values=new double[highest.length];Arrays.fill(values,Double.NaN);
         int[] segments=new int[highest.length];Arrays.fill(segments,-1);
@@ -33,7 +36,7 @@ public final class HighestBodySmoother {
         while(start<highest.length){
             if(!Double.isFinite(highest[start])){start++;continue;}
             int end=start+1;
-            while(end<highest.length&&Double.isFinite(highest[end])&&continuous(times[end-1],times[end]))end++;
+            while(end<highest.length&&Double.isFinite(highest[end])&&continuous(times[end-1],times[end])&&(groups==null||groups[end-1]==groups[end]))end++;
             int left=start,right=start;double sum=0;
             for(int at=start;at<end;at++){
                 long center=times[at];

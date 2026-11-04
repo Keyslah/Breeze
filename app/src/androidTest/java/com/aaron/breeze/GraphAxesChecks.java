@@ -55,6 +55,11 @@ final class GraphAxesChecks {
             check(!controls.get(3).isChecked(),"New Dreo trace is off by default");
             final int[] selected={-1};panel.setOnSeriesChangedListener((series,checked)->selected[0]=series);controls.get(0).performClick();
             check(selected[0]==GraphView.HIGHEST_BODY_SERIES,"Display reordering preserves persisted series identity");
+            int[] mask={0};panel.ouraControls(OuraData.ALL,value->mask[0]=value);controls.clear();collect(panel,controls);
+            check(controls.size()==14,"Sensor and Oura controls share one 14-control grid");
+            check(controls.get(10).getText().toString().equals("Obpm"),"Oura BPM label is concise");
+            check(controls.get(8).getParent().getParent()==controls.get(10).getParent().getParent(),"Oura controls continue the sensor row without a separate section");
+            controls.get(10).performClick();check(mask[0]==(OuraData.ALL&~OuraData.HEART),"Oura checkbox keeps its separate saved bit mask");
         }
     }
     private boolean colorNear(Bitmap image,int color,float x,float y){for(int row=Math.max(0,Math.round(y)-px(1));row<=Math.min(image.getHeight()-1,Math.round(y)+px(1));row++)for(int col=Math.max(0,Math.round(x)-px(1));col<=Math.min(image.getWidth()-1,Math.round(x)+px(1));col++)if(image.getPixel(col,row)==color)return true;return false;}

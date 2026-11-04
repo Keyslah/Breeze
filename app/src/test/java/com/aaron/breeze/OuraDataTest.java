@@ -33,7 +33,7 @@ public class OuraDataTest {
         assertEquals(300,period(source().put("sleep_phase_30_sec",JSONObject.NULL).put("sleep_phase_5_min","1234")).stageIntervalSeconds);
     }
     @Test public void daylightSavingUsesOffsetsAndCentralDisplay()throws Exception{
-        OuraData.Period p=period(source());assertEquals(10800000,p.end-p.start);assertTrue(p.label().contains("CDT"));assertTrue(p.label().contains("CST"));
+        OuraData.Period p=period(source());assertEquals(10800000,p.end-p.start);assertTrue(p.label().contains("00:30"));assertTrue(p.label().contains("02:30"));assertFalse(p.label().contains("CDT"));assertFalse(p.label().contains("CST"));
         long a=OuraData.timestamp("2026-03-08T01:30:00-06:00"),b=OuraData.timestamp("2026-03-08T03:30:00-05:00");assertEquals(3600000,b-a);
         assertFalse(OuraData.overlaps(p.start,p.end,p.end,p.end+1000));assertTrue(OuraData.overlaps(p.start,p.end,p.end-1000,p.end+1000));
     }

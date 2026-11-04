@@ -21,6 +21,9 @@ public final class GraphReadingDetailsView extends LinearLayout {
     private final TextView feeling,note;
     private final LinearLayout rows;
     private final List<ReadingCell> cells=new ArrayList<>();
+    private final List<LinearLayout> ouraCells=new ArrayList<>();
+    private TextView bpm,sleepStage;
+    private int ouraMask;
     private static final int columns=4;
     private int visibleSeries=GraphView.DEFAULT_SERIES;
     private boolean syncingSeries;
@@ -37,6 +40,30 @@ public final class GraphReadingDetailsView extends LinearLayout {
     }
 
     public void setOnSeriesChangedListener(SeriesChangedListener listener){seriesChangedListener=listener;}
+    void ouraControls(int mask,OuraHistoryView.Changed changed){
+        ouraMask=mask;ouraCells.clear();
+        String[] labels={"Obpm","Osleep","Otemp","Oresp"};
+        String[] descriptions={"Oura heart rate","Oura sleep stages","Oura temperature deviation summary","Oura respiratory rate summary"};
+        int[] bits={OuraData.HEART,OuraData.STAGES,OuraData.TEMPERATURE,OuraData.BREATH};
+        int[] colors={OuraPlot.HEART_COLOR,0xff69bce1,0xffe9bd72,0xff79d5c3};
+        for(int i=0;i<bits.length;i++){
+            final int bit=bits[i];LinearLayout cell=new LinearLayout(getContext());cell.setOrientation(VERTICAL);cell.setPadding(dp(2),0,dp(2),dp(2));
+            CheckBox box=new CheckBox(getContext());box.setTag("historyOura"+bit);box.setText(labels[i]);box.setTextSize(13);box.setTextColor(colors[i]);box.setButtonTintList(ColorStateList.valueOf(colors[i]));box.setContentDescription(descriptions[i]);box.setMinWidth(0);box.setMinimumWidth(0);box.setMinHeight(dp(48));box.setMinimumHeight(dp(48));box.setPadding(0,0,0,0);box.setChecked((mask&bit)!=0);
+            box.setOnCheckedChangeListener((button,checked)->{ouraMask=checked?ouraMask|bit:ouraMask&~bit;changed.changed(ouraMask);});cell.addView(box,wrap());
+            if(i<2){TextView value=text("—",22,colors[i]);value.setSingleLine(true);value.setAutoSizeTextTypeUniformWithConfiguration(12,22,1,android.util.TypedValue.COMPLEX_UNIT_SP);cell.addView(value,wrap());if(i==0)bpm=value;else sleepStage=value;}
+            ouraCells.add(cell);
+        }
+        rebuildRows();
+    }
+    void showOuraReading(List<OuraData.Period> periods,long time){
+        if(bpm==null)return;String heart="—",stage="—";
+        for(OuraData.Period period:periods)if(time>=period.start&&time<period.end){
+            if(period.heartIntervalMs>0&&time>=period.heartStart){long index=(long)((time-period.heartStart)/period.heartIntervalMs);if(index<period.heart.length&&period.heartValid((int)index))heart=String.format(java.util.Locale.US,"%.0f",period.heart[(int)index]);}
+            int index=(int)((time-period.start)/(period.stageIntervalSeconds*1000L));
+            if(index>=0&&index<period.stages.length())stage=switch(period.stage(index)){case 1->"Deep";case 2->"Light";case 3->"REM";case 4->"Awake";default->"—";};
+        }
+        bpm.setText(heart);sleepStage.setText(stage);
+    }
     public void setVisibleSeries(int mask){
         visibleSeries=mask&GraphView.ALL_SERIES;syncingSeries=true;
         try{for(int series=0;series<cells.size();series++)cells.get(series).label.setChecked((visibleSeries&(1<<series))!=0);}
@@ -61,11 +88,13 @@ public final class GraphReadingDetailsView extends LinearLayout {
 
     private void rebuildRows(){
         for(ReadingCell cell:cells)if(cell.getParent() instanceof ViewGroup)((ViewGroup)cell.getParent()).removeView(cell);
+        for(View cell:ouraCells)if(cell.getParent() instanceof ViewGroup)((ViewGroup)cell.getParent()).removeView(cell);
         rows.removeAllViews();
-        for(int[] group:DISPLAY_GROUPS)for(int index=0;index<group.length;index+=columns){
+        List<View> ordered=new ArrayList<>();for(int[] group:DISPLAY_GROUPS)for(int series:group)ordered.add(cells.get(series));ordered.addAll(ouraCells);
+        for(int index=0;index<ordered.size();index+=columns){
             LinearLayout row=new LinearLayout(getContext());row.setOrientation(HORIZONTAL);
             for(int column=0;column<columns;column++){
-                int at=index+column;View cell=at<group.length?cells.get(group[at]):new View(getContext());
+                int at=index+column;View cell=at<ordered.size()?ordered.get(at):new View(getContext());
                 LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,LayoutParams.WRAP_CONTENT,1);
                 if(column<columns-1)params.setMarginEnd(dp(4));row.addView(cell,params);
             }
